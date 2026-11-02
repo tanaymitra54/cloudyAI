@@ -1,0 +1,43 @@
+{
+  "name": "tanayai",
+  "productName": "TanayAI",
+  "version": "0.1.0",
+  "description": "Local-first AI copilot: on-device speech-to-text (TanayVoice) + DeepSeek / opencode / commandcode answers in an overlay excluded from screen capture.",
+  "main": "src/main/index.js",
+  "author": "Tanay Mitra",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "smoke": "electron . --smoke",
+    "test": "node test/llm.test.js && node test/detection.test.js",
+    "test:stt": "node test/tanayvoice.test.js",
+    "test:e2e": "node test/e2e.test.js",
+    "bench": "node test/opencodego.bench.js",
+    "get-model": "bash scripts/get-model.sh",
+    "dist": "electron-builder --mac --arm64"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.tanay.ai",
+    "productName": "TanayAI",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg"
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "TanayAI listens to the meeting audio so it can transcribe it on-device with TanayVoice.",
+        "NSScreenCaptureUsageDescription": "TanayAI needs screen access to capture system audio from calls.",
+        "LSUIElement": true
+      }
+    }
+  }
+}

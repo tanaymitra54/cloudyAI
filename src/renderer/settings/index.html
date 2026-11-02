@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <header>
+      <h1>TanayAI settings</h1>
+      <p class="sub">Changes apply immediately — no restart.</p>
+    </header>
+
+    <section>
+      <h2>Shortcuts</h2>
+      <div id="shortcuts"></div>
+      <p class="hint">Click a shortcut, then press the new combination. Escape cancels. At least one modifier is required.</p>
+    </section>
+
+    <section>
+      <h2>Transcription</h2>
+      <label class="row">
+        <span>Model</span>
+        <select id="sttModel"></select>
+      </label>
+      <p class="hint">Bigger models are more accurate and slower. base.en is the default; try small.en if words are being dropped.</p>
+    </section>
+
+    <section>
+      <h2>Answering</h2>
+      <label class="row">
+        <span>Provider</span>
+        <select id="provider">
+          <option value="opencode-go">opencode-go (direct API)</option>
+          <option value="deepseek">deepseek</option>
+          <option value="opencode">opencode CLI</option>
+          <option value="commandcode">commandcode CLI</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Model</span>
+        <select id="model"></select>
+      </label>
+      <label class="row">
+        <span>API key</span>
+        <input id="apiKey" type="password" spellcheck="false" autocomplete="off" />
+      </label>
+      <p class="hint" id="keyHint">Leave blank to keep the stored key.</p>
+      <label class="row check">
+        <input id="autoAnswer" type="checkbox" />
+        <span>Answer questions automatically (otherwise only on the hotkey)</span>
+      </label>
+    </section>
+
+    <div id="status" class="status"></div>
+
+    <footer>
+      <button id="reset" class="ghost">Reset shortcuts</button>
+      <button id="config" class="ghost">Open config.json</button>
+      <span class="grow"></span>
+      <button id="save" class="primary">Save</button>
+      <button id="close" class="ghost">Close</button>
+    </footer>
+    <script src="settings.js"></script>
+  </body>
+</html>
