@@ -4,7 +4,7 @@ const compat = require('./openai-compat');
 
 // DeepSeek's platform API. Kept as its own module so the config shape and the
 // error text stay provider-specific.
-function complete({ cfg, system, user, signal, onDelta, maxTokens }) {
+function complete({ cfg, system, user, images, signal, onDelta, maxTokens }) {
   return compat.complete({
     cfg: {
       apiKey: cfg.apiKey,
@@ -15,6 +15,7 @@ function complete({ cfg, system, user, signal, onDelta, maxTokens }) {
     },
     system,
     user,
+    images,
     signal,
     onDelta,
     maxTokens: maxTokens ?? 2000,

@@ -1,8 +1,8 @@
 {
-  "name": "tanayai",
-  "productName": "TanayAI",
+  "name": "cloudyai",
+  "productName": "CloudyAI",
   "version": "0.1.0",
-  "description": "Local-first AI copilot: on-device speech-to-text (TanayVoice) + DeepSeek / opencode / commandcode answers in an overlay excluded from screen capture.",
+  "description": "Local-first AI copilot: on-device speech-to-text (CloudyVoice) + DeepSeek / opencode / commandcode answers in an overlay excluded from screen capture.",
   "main": "src/main/index.js",
   "author": "Tanay Mitra",
   "license": "MIT",
@@ -10,23 +10,36 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "smoke": "electron . --smoke",
-    "test": "node test/llm.test.js && node test/detection.test.js",
-    "test:stt": "node test/tanayvoice.test.js",
+    "test": "node test/llm.test.js && node test/detection.test.js && node test/tray-icon.test.js && node test/pick.test.js && node test/cloudyvoice-lifecycle.test.js",
+    "make-icon": "node scripts/make-icon.js",
+    "test:stt": "node test/cloudyvoice.test.js",
     "test:e2e": "node test/e2e.test.js",
     "bench": "node test/opencodego.bench.js",
+    "build:ear": "bash scripts/build-ear.sh",
     "get-model": "bash scripts/get-model.sh",
-    "dist": "electron-builder --mac --arm64"
+    "dist": "npm run build:ear && npm run build:audio && electron-builder --mac --arm64",
+    "build:audio": "bash scripts/build-audio.sh"
   },
   "devDependencies": {
     "electron": "^33.4.11",
     "electron-builder": "^26.18.0"
   },
   "build": {
-    "appId": "com.tanay.ai",
-    "productName": "TanayAI",
+    "appId": "com.cloudy.ai",
+    "productName": "CloudyAI",
     "files": [
       "src/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/CloudyEar/.build/release/CloudyEar",
+        "to": "cloudy-ear"
+      },
+      {
+        "from": "native/CloudyAudio/.build/release/CloudyAudio",
+        "to": "cloudy-audio"
+      }
     ],
     "mac": {
       "category": "public.app-category.productivity",
@@ -34,8 +47,8 @@
         "dmg"
       ],
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "TanayAI listens to the meeting audio so it can transcribe it on-device with TanayVoice.",
-        "NSScreenCaptureUsageDescription": "TanayAI needs screen access to capture system audio from calls.",
+        "NSMicrophoneUsageDescription": "CloudyAI listens to the meeting audio so it can transcribe it on-device with CloudyVoice.",
+        "NSScreenCaptureUsageDescription": "CloudyAI needs screen access to capture system audio from calls.",
         "LSUIElement": true
       }
     }

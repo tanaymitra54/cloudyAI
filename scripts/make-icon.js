@@ -1,14 +1,19 @@
 'use strict';
 
-// Generates build/icon.png (1024x1024) — a dark rounded square with a ring and
-// a filled centre, matching the tray glyph. No image libraries: raw PNG via zlib.
+// Builds build/icon.png + icon.iconset + icon.icns from build/icon-master.png.
+// Master is the ArtCraft-style teal + engraved tiger (square RGB). We apply a
+// macOS squircle alpha mask, then resize with `sips` and pack with `iconutil`.
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { execFileSync } = require('child_process');
 
-const S = 1024;
-const px = Buffer.alloc(S * S * 4);
+const ROOT = path.join(__dirname, '..');
+const BUILD = path.join(ROOT, 'build');
+const MASTER = path.join(BUILD, 'icon-master.png');
+const OUT_PNG = path.join(BUILD, 'icon.png');
+const ICONSET = path.join(BUILD, 'icon.iconset');
 
 const crcTable = (() => {
   const t = new Int32Array(256);
@@ -35,65 +40,152 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-const cx = S / 2;
-const cy = S / 2;
-const radius = S * 0.22; // rounded square corner radius
-const inset = S * 0.04;
-const half = S / 2 - inset;
-
-function roundedSquareDist(x, y) {
-  const dx = Math.max(Math.abs(x - cx) - (half - radius), 0);
-  const dy = Math.max(Math.abs(y - cy) - (half - radius), 0);
-  return Math.hypot(dx, dy) - radius;
+function readPng(file) {
+  const data = fs.readFileSync(file);
+  if (data.compare(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), 0, 8, 0, 8) !== 0) {
+    throw new Error(`not a PNG: ${file}`);
+  }
+  let i = 8;
+  let w;
+  let h;
+  let depth;
+  let color;
+  let idat = Buffer.alloc(0);
+  while (i < data.length) {
+    const ln = data.readUInt32BE(i);
+    const typ = data.slice(i + 4, i + 8).toString('ascii');
+    const body = data.slice(i + 8, i + 8 + ln);
+    i += 12 + ln;
+    if (typ === 'IHDR') {
+      w = body.readUInt32BE(0);
+      h = body.readUInt32BE(4);
+      depth = body[8];
+      color = body[9];
+    } else if (typ === 'IDAT') {
+      idat = Buffer.concat([idat, body]);
+    } else if (typ === 'IEND') break;
+  }
+  if (depth !== 8 || (color !== 2 && color !== 6)) {
+    throw new Error(`need 8-bit RGB/RGBA PNG, got depth=${depth} color=${color}`);
+  }
+  const bpp = color === 6 ? 4 : 3;
+  const raw = zlib.inflateSync(idat);
+  const stride = w * bpp + 1;
+  const prev = Buffer.alloc(w * bpp);
+  const px = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const filt = raw[y * stride];
+    const row = Buffer.from(raw.slice(y * stride + 1, (y + 1) * stride));
+    if (filt === 1) {
+      for (let x = bpp; x < row.length; x++) row[x] = (row[x] + row[x - bpp]) & 255;
+    } else if (filt === 2) {
+      for (let x = 0; x < row.length; x++) row[x] = (row[x] + prev[x]) & 255;
+    } else if (filt === 3) {
+      for (let x = 0; x < row.length; x++) {
+        const a = x >= bpp ? row[x - bpp] : 0;
+        row[x] = (row[x] + ((a + prev[x]) >> 1)) & 255;
+      }
+    } else if (filt === 4) {
+      for (let x = 0; x < row.length; x++) {
+        const a = x >= bpp ? row[x - bpp] : 0;
+        const b = prev[x];
+        const c = x >= bpp ? prev[x - bpp] : 0;
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        const pr = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        row[x] = (row[x] + pr) & 255;
+      }
+    } else if (filt !== 0) {
+      throw new Error(`unsupported PNG filter ${filt}`);
+    }
+    row.copy(prev);
+    for (let x = 0; x < w; x++) {
+      const si = x * bpp;
+      const di = (y * w + x) * 4;
+      px[di] = row[si];
+      px[di + 1] = row[si + 1];
+      px[di + 2] = row[si + 2];
+      px[di + 3] = bpp === 4 ? row[si + 3] : 255;
+    }
+  }
+  return { w, h, px };
 }
 
-for (let y = 0; y < S; y++) {
-  for (let x = 0; x < S; x++) {
-    const d = roundedSquareDist(x, y);
-    const bgAlpha = Math.max(0, Math.min(1, 1 - d)); // antialias the edge
+function writePng(file, w, h, px) {
+  const raw = Buffer.alloc(h * (w * 4 + 1));
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0;
+    px.copy(raw, y * (w * 4 + 1) + 1, y * w * 4, (y + 1) * w * 4);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  fs.writeFileSync(file, png);
+}
 
-    // ring + dot
-    const r = Math.hypot(x - cx, y - cy);
-    const ring = r < S * 0.30 && r > S * 0.235 ? 1 : 0;
-    const dot = r < S * 0.105 ? 1 : 0;
-    const glyph = Math.max(ring, dot);
-
-    // vertical gradient backdrop
-    const t = y / S;
-    const bg = [22 - 8 * t, 26 - 8 * t, 34 - 6 * t];
-    const fg = [126, 226, 168]; // accent green, same as the listening dot
-
-    const mix = glyph;
-    const col = [0, 1, 2].map((i) => Math.round(bg[i] * (1 - mix) + fg[i] * mix));
-
-    const i = (y * S + x) * 4;
-    px[i] = col[0];
-    px[i + 1] = col[1];
-    px[i + 2] = col[2];
-    px[i + 3] = Math.round(255 * bgAlpha);
+function applySquircleMask(w, h, px) {
+  const cx = w / 2;
+  const cy = h / 2;
+  const radius = w * 0.22;
+  const inset = w * 0.02;
+  const half = w / 2 - inset;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dx = Math.max(Math.abs(x - cx) - (half - radius), 0);
+      const dy = Math.max(Math.abs(y - cy) - (half - radius), 0);
+      const d = Math.hypot(dx, dy) - radius;
+      const cover = Math.max(0, Math.min(1, 1 - d));
+      const i = (y * w + x) * 4;
+      px[i + 3] = Math.round(px[i + 3] * cover);
+    }
   }
 }
 
-// raw scanlines with filter byte 0
-const raw = Buffer.alloc(S * (S * 4 + 1));
-for (let y = 0; y < S; y++) {
-  raw[y * (S * 4 + 1)] = 0;
-  px.copy(raw, y * (S * 4 + 1) + 1, y * S * 4, (y + 1) * S * 4);
+if (!fs.existsSync(MASTER)) {
+  console.error(`missing ${MASTER} — drop the square tiger master PNG there first`);
+  process.exit(1);
 }
 
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(S, 0);
-ihdr.writeUInt32BE(S, 4);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 6; // RGBA
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
-]);
+const { w, h, px } = readPng(MASTER);
+if (w !== h) throw new Error(`master must be square, got ${w}x${h}`);
+applySquircleMask(w, h, px);
+writePng(OUT_PNG, w, h, px);
+console.log(`wrote ${OUT_PNG}`);
 
-const out = path.join(__dirname, '..', 'build', 'icon.png');
-fs.mkdirSync(path.dirname(out), { recursive: true });
-fs.writeFileSync(out, png);
-console.log(`wrote ${out} (${(png.length / 1024).toFixed(0)} KB)`);
+fs.rmSync(ICONSET, { recursive: true, force: true });
+fs.mkdirSync(ICONSET, { recursive: true });
+
+const sizes = [
+  ['icon_16x16.png', 16],
+  ['icon_16x16@2x.png', 32],
+  ['icon_32x32.png', 32],
+  ['icon_32x32@2x.png', 64],
+  ['icon_64x64.png', 64], // nonstandard but kept for prior iconset
+  ['icon_128x128.png', 128],
+  ['icon_128x128@2x.png', 256],
+  ['icon_256x256.png', 256],
+  ['icon_256x256@2x.png', 512],
+  ['icon_512x512.png', 512],
+  ['icon_512x512@2x.png', 1024],
+];
+
+for (const [name, pxSize] of sizes) {
+  const dest = path.join(ICONSET, name);
+  execFileSync('sips', ['-z', String(pxSize), String(pxSize), OUT_PNG, '--out', dest], {
+    stdio: 'pipe',
+  });
+}
+
+const icns = path.join(BUILD, 'icon.icns');
+execFileSync('iconutil', ['-c', 'icns', ICONSET, '-o', icns], { stdio: 'pipe' });
+console.log(`wrote ${icns}`);

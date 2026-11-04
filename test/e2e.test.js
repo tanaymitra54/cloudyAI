@@ -1,7 +1,7 @@
 'use strict';
 
 // End-to-end latency + accuracy check through the REAL pipeline:
-//   WAV -> TanayVoice (VAD, whisper) -> detection -> opencode-go -> first token
+//   WAV -> CloudyVoice (VAD, whisper) -> detection -> opencode-go -> first token
 //
 //   node test/e2e.test.js /path/to/16k-mono.wav
 //
@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { TanayVoice } = require('../src/main/stt/TanayVoice');
+const { CloudyVoice } = require('../src/main/stt/CloudyVoice');
 const { scoreQuestion, similarity, wordCount } = require('../src/main/detection');
 const opencodego = require('../src/main/llm/opencodego');
 const { systemPrompt, buildUserPrompt } = require('../src/main/prompts');
@@ -56,10 +56,10 @@ const pcm = readWav(wavPath);
 
 // Mirror the app: base.en for both, which matched small.en on clean and noisy
 // interview audio at roughly half the decode time.
-const modelDir = path.join(process.env.HOME, '.cache', 'tanayvoice');
+const modelDir = path.join(process.env.HOME, '.cache', 'cloudyvoice');
 const finalModel = path.join(modelDir, 'ggml-base.en.bin');
 
-const voice = new TanayVoice({
+const voice = new CloudyVoice({
   bin: '/opt/homebrew/bin/whisper-cli',
   modelPath: finalModel,
   partialModelPath: finalModel,

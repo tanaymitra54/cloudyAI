@@ -7,7 +7,7 @@
   </head>
   <body>
     <header>
-      <h1>TanayAI settings</h1>
+      <h1>CloudyAI settings</h1>
       <p class="sub">Changes apply immediately — no restart.</p>
     </header>
 
@@ -20,10 +20,24 @@
     <section>
       <h2>Transcription</h2>
       <label class="row">
-        <span>Model</span>
+        <span>Engine</span>
+        <select id="sttEngine">
+          <option value="parakeet">Parakeet Unified 0.6B — Neural Engine (fast)</option>
+          <option value="whisper">whisper.cpp — local fallback</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Audio source</span>
+        <select id="audioSource">
+          <option value="system">System audio — the other participant (recommended)</option>
+          <option value="mic">Microphone</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Whisper model</span>
         <select id="sttModel"></select>
       </label>
-      <p class="hint">Bigger models are more accurate and slower. base.en is the default; try small.en if words are being dropped.</p>
+      <p class="hint">System audio captures the call digitally, so your own voice is never transcribed. Parakeet keeps the model loaded and decodes a question in about 0.2 s.</p>
     </section>
 
     <section>
@@ -32,6 +46,7 @@
         <span>Provider</span>
         <select id="provider">
           <option value="opencode-go">opencode-go (direct API)</option>
+          <option value="commandcode-api">commandcode API (direct)</option>
           <option value="deepseek">deepseek</option>
           <option value="opencode">opencode CLI</option>
           <option value="commandcode">commandcode CLI</option>

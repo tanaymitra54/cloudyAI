@@ -5,15 +5,26 @@ const path = require('path');
 const { app } = require('electron');
 
 const DEFAULTS = {
-  provider: 'opencode-go', // opencode-go | deepseek | opencode | commandcode
+  provider: 'opencode-go', // opencode-go | commandcode-api | deepseek | opencode | commandcode
   opencodeGo: {
     // Prefer OPENCODE_API_KEY in .env over storing it here.
     apiKey: '',
     baseUrl: 'https://opencode.ai/zen/go/v1',
-    // gpt-5.6-luna: fastest model that returns visible text reliably.
-    // deepseek-v4.1-flash is a reasoning model and sometimes spends the whole
-    // budget thinking, returning an empty answer.
-    model: 'gpt-5.6-luna',
+    // claude-haiku-5-5: fastest reliable model measured (median ~1.1 s to first
+    // token). deepseek-v4.1-flash is close but is a reasoning model that
+    // sometimes spends the whole budget thinking and returns nothing.
+    model: 'claude-haiku-5-5',
+  },
+  commandCodeApi: {
+    // Command Code's Provider API (https://commandcode.ai/docs/provider). This
+    // is the direct HTTPS endpoint: it uses a Command Code API key you own, not
+    // the credentials the commandcode CLI stores. Prefer COMMANDCODE_API_KEY in
+    // .env over storing the key here.
+    apiKey: '',
+    baseUrl: 'https://api.commandcode.ai/provider/v1',
+    // Command Code's own default; many more chat models appear in the model
+    // picker once a key is set (GET /models).
+    model: 'deepseek/deepseek-v4-flash',
   },
   deepseek: {
     // Prefer the DEEPSEEK_API_KEY env var / .env over storing it here.
@@ -32,21 +43,32 @@ const DEFAULTS = {
     args: ['-p', '{prompt}'],
     timeoutMs: 90000,
   },
-  tanayvoice: {
+  cloudyvoice: {
+    // 'parakeet': NVIDIA Parakeet Unified EN 0.6B through FluidAudio. Runs on
+    // the Neural Engine, keeps the model in memory, and decodes a 6 s question
+    // in ~170 ms (vs ~520 ms for whisper base.en, which also reloads the model
+    // every time). First use downloads ~600 MB once.
+    // 'whisper': the previous whisper.cpp CLI path.
+    engine: 'parakeet',
+    // 'system': capture the other participant through the system audio helper
+    // (screen recording permission). 'mic': the microphone path, off by default.
+    source: 'system',
+    parakeetBin: '', // empty = bundled helper, or native/CloudyEar/.build/release/CloudyEar in dev
+    parakeetModelsDir: '', // empty = ~/Library/Application Support/FluidAudio/Models
+    audioBin: '', // empty = bundled cloudy-audio, or native/CloudyAudio/.build/release in dev
     bin: 'whisper-cli',
     modelPath: '', // empty = <userData>/models/ggml-base.en.bin
     language: 'en',
     threads: 4,
     beamSize: 5, // beam search on finals only
     preRollMs: 200, // audio kept before speech onset so the first word is not clipped
-    // A 260 ms pause is not an utterance boundary — people breathe mid-sentence.
-    // Cutting there split questions into fragments, which is what made
-    // transcription look wrong. 700 ms keeps whole sentences together.
-    silenceMs: 700,
-    minSpeechMs: 400, // ignore utterances shorter than this
+    // 500 ms is the endpointing sweet spot with Parakeet: 700 ms made every
+    // question feel a beat late, 250 ms split sentences at natural breaths.
+    silenceMs: 500,
+    minSpeechMs: 250, // "Why?" is ~300 ms; 400 ms used to drop it entirely
     maxSegmentMs: 15000, // long interviewer questions must not be chopped
-    partialEveryMs: 1500, // live-caption cadence while speaking
-    partialTailMs: 8000, // how much audio a live caption sees
+    partialEveryMs: 900, // live-caption cadence while speaking
+    partialTailMs: 4500, // how much audio a live caption sees (shorter = cheaper, less final contention)
     // Biases decoding toward the vocabulary of technical interviews.
     initialPrompt:
       'Job interview conversation. Technical vocabulary: JavaScript, TypeScript, Python, SQL, API, REST, GraphQL, Kubernetes, Docker, microservices, latency, throughput, caching, Redis, Postgres, index, hash map, recursion, dynamic programming, time complexity, Big O, system design, load balancer, CI/CD, AWS.',
@@ -105,6 +127,7 @@ function file() {
 // never written back to disk.
 const KEY_SOURCES = [
   ['opencodeGo', 'OPENCODE_API_KEY'],
+  ['commandCodeApi', 'COMMANDCODE_API_KEY'],
   ['deepseek', 'DEEPSEEK_API_KEY'],
 ];
 
@@ -133,6 +156,21 @@ function load() {
       clear: onDisk.overlay.hotkeyClear,
       ...(onDisk.hotkeys || {}),
     };
+  }
+
+  // Migrate the old "tanayvoice" section and its model cache path so a config
+  // written before the CloudyAI rename keeps working untouched.
+  if (onDisk.tanayvoice && !onDisk.cloudyvoice) {
+    onDisk.cloudyvoice = onDisk.tanayvoice;
+    delete onDisk.tanayvoice;
+  }
+  const oldCache = path.join(app.getPath('home'), '.cache', 'tanayvoice');
+  const newCache = path.join(app.getPath('home'), '.cache', 'cloudyvoice');
+  for (const key of ['modelPath', 'partialModelPath']) {
+    const value = onDisk.cloudyvoice?.[key];
+    if (typeof value === 'string' && value.startsWith(oldCache)) {
+      onDisk.cloudyvoice[key] = value.replace(oldCache, newCache);
+    }
   }
 
   rawDisk = onDisk;
@@ -172,7 +210,7 @@ function get(keyPath) {
 
 function findModel(fileName) {
   const local = path.join(app.getPath('userData'), 'models', fileName);
-  const cache = path.join(app.getPath('home'), '.cache', 'tanayvoice', fileName);
+  const cache = path.join(app.getPath('home'), '.cache', 'cloudyvoice', fileName);
   if (fs.existsSync(local)) return local;
   if (fs.existsSync(cache)) return cache;
   return local;
@@ -184,14 +222,14 @@ function findModel(fileName) {
  * ggml-small.en.bin (or medium) if your recording conditions are worse.
  */
 function resolveModelPath() {
-  const cfg = load().tanayvoice;
+  const cfg = load().cloudyvoice;
   if (cfg.modelPath) return cfg.modelPath;
   return findModel('ggml-base.en.bin');
 }
 
 /** Live captions can run the faster model; they only need to keep up with speech. */
 function resolvePartialModelPath() {
-  const cfg = load().tanayvoice;
+  const cfg = load().cloudyvoice;
   if (cfg.partialModelPath) return cfg.partialModelPath;
   return findModel('ggml-base.en.bin');
 }
@@ -200,7 +238,7 @@ function resolvePartialModelPath() {
 function listModels() {
   const dirs = [
     path.join(app.getPath('userData'), 'models'),
-    path.join(app.getPath('home'), '.cache', 'tanayvoice'),
+    path.join(app.getPath('home'), '.cache', 'cloudyvoice'),
   ];
   const seen = new Map();
   for (const dir of dirs) {

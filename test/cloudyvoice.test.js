@@ -1,17 +1,17 @@
 'use strict';
 
-// Headless test for TanayVoice: feed a 16 kHz mono WAV through the real VAD +
+// Headless test for CloudyVoice: feed a 16 kHz mono WAV through the real VAD +
 // whisper.cpp path in 100 ms chunks, exactly like the renderer does.
 //
-//   node test/tanayvoice.test.js /path/to/audio.wav
+//   node test/cloudyvoice.test.js /path/to/audio.wav
 
 const fs = require('fs');
 const path = require('path');
-const { TanayVoice } = require('../src/main/stt/TanayVoice');
+const { CloudyVoice } = require('../src/main/stt/CloudyVoice');
 
 const wavPath = process.argv[2];
 if (!wavPath) {
-  console.error('usage: node test/tanayvoice.test.js <16k-mono.wav>');
+  console.error('usage: node test/cloudyvoice.test.js <16k-mono.wav>');
   process.exit(2);
 }
 
@@ -37,10 +37,14 @@ if (dataOff < 0) {
 
 const pcm = new Int16Array(buf.buffer.slice(buf.byteOffset + dataOff, buf.byteOffset + dataOff + dataLen));
 
-const model = path.join(process.env.HOME, '.cache', 'tanayvoice', 'ggml-base.en.bin');
-const voice = new TanayVoice({
+// CLOUDY_ENGINE=parakeet exercises the FluidAudio helper instead of whisper.cpp.
+const engine = process.env.CLOUDY_ENGINE === 'parakeet' ? 'parakeet' : 'whisper';
+
+const voice = new CloudyVoice({
+  engine,
+  parakeetBin: path.join(__dirname, '..', 'native', 'CloudyEar', '.build', 'release', 'CloudyEar'),
   bin: '/opt/homebrew/bin/whisper-cli',
-  modelPath: model,
+  modelPath: path.join(process.env.HOME, '.cache', 'cloudyvoice', 'ggml-base.en.bin'),
   language: 'en',
   threads: 4,
   silenceMs: 380,
@@ -53,6 +57,8 @@ const voice = new TanayVoice({
 let finals = 0;
 const started = Date.now();
 
+voice.on('loading', () => console.log(`[loading ${String(Date.now() - started).padStart(5)}ms] model`));
+voice.on('ready', () => console.log(`[ready   ${String(Date.now() - started).padStart(5)}ms]`));
 voice.on('partial', (t) => console.log(`[partial ${String(Date.now() - started).padStart(5)}ms] ${t}`));
 voice.on('final', (t) => {
   finals++;
@@ -71,10 +77,10 @@ const timer = setInterval(() => {
     // trailing silence so the last utterance closes
     for (let s = 0; s < 8; s++) voice.push(new Int16Array(CHUNK));
     setTimeout(() => {
-      voice.stop();
-      console.log(`\n${finals} final segment(s), model=${path.basename(model)}`);
+      voice.shutdown();
+      console.log(`\n${finals} final segment(s), engine=${engine}`);
       process.exit(finals > 0 ? 0 : 1);
-    }, 4000);
+    }, 8000);
     return;
   }
   voice.push(pcm.subarray(i, Math.min(i + CHUNK, pcm.length)));

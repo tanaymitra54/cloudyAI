@@ -6,6 +6,9 @@ const captionEl = document.getElementById('caption');
 const transcriptEl = document.getElementById('transcript');
 const answerEl = document.getElementById('answer');
 const metaEl = document.getElementById('meta');
+const promptEl = document.getElementById('prompt');
+const sendBtn = document.getElementById('send');
+const shotBtn = document.getElementById('shot');
 
 let raw = '';
 let listening = false;
@@ -97,6 +100,49 @@ function setStatus(text, cls) {
   dot.className = `dot ${cls || ''}`.trim();
 }
 
+// ------------------------------------------------------------------ composer
+// The textarea grows with its content up to a cap, so a one-line question does
+// not take panel space away from the answer.
+function growPrompt() {
+  promptEl.style.height = 'auto';
+  promptEl.style.height = `${Math.min(promptEl.scrollHeight, 96)}px`;
+  sendBtn.disabled = !promptEl.value.trim();
+}
+
+function takePrompt() {
+  const text = promptEl.value.trim();
+  promptEl.value = '';
+  growPrompt();
+  return text;
+}
+
+function sendTyped() {
+  const text = takePrompt();
+  if (text) window.tanay.askText(text);
+}
+
+promptEl.addEventListener('input', growPrompt);
+promptEl.addEventListener('keydown', (event) => {
+  // Enter sends; Shift+Enter keeps the newline. IME composition must not send.
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    sendTyped();
+  }
+});
+sendBtn.addEventListener('click', sendTyped);
+shotBtn.addEventListener('click', async () => {
+  shotBtn.disabled = true;
+  const typed = promptEl.value;
+  // The box is only cleared once the capture really happened, so a permission
+  // error does not swallow a question the user just wrote.
+  const captured = await window.tanay.screenshot(typed.trim());
+  if (captured && promptEl.value === typed) {
+    promptEl.value = '';
+    growPrompt();
+  }
+  shotBtn.disabled = false;
+});
+
 window.tanay.onCaption((text) => {
   captionEl.textContent = text;
 });
@@ -128,6 +174,7 @@ window.tanay.onTranscriptReset(() => {
 
 window.tanay.onAnswerStart(() => {
   document.getElementById('actions').hidden = true;
+  shotBtn.disabled = false;
   // A longer version of the question arrived (the speculative answer was
   // superseded). Keep the existing text on screen, dimmed, and swap it only
   // when new tokens actually exist — otherwise the panel blanks mid-read.
@@ -163,6 +210,7 @@ window.tanay.onAnswerEnd(() => {
 });
 
 window.tanay.onStatus((s) => {
+  shotBtn.disabled = s === 'capturing';
   if (s === 'listening') {
     listening = true;
     document.getElementById('actions').hidden = true;
@@ -172,6 +220,10 @@ window.tanay.onStatus((s) => {
     listening = false;
     setStatus('idle', '');
     document.getElementById('listen').classList.remove('on');
+  } else if (s === 'capturing') {
+    setStatus('capturing screen…', 'busy');
+  } else if (s === 'loading') {
+    setStatus('loading speech model…', 'busy');
   } else if (s === 'thinking') {
     setStatus('thinking…', 'busy');
   } else if (s === 'error') {
@@ -182,12 +234,17 @@ window.tanay.onStatus((s) => {
 window.tanay.onError((message) => {
   thinking = false;
   pendingSwap = false;
+  shotBtn.disabled = false;
   raw = `**${message.split('\n')[0]}**\n\n${message.split('\n').slice(1).join('\n')}`;
   paint();
   setStatus('error', 'error');
   // A permission problem has a fix the user can click; anything else is just text.
-  const permissionIssue = /microphone|permission/i.test(message);
-  document.getElementById('actions').hidden = !permissionIssue;
+  const actions = document.getElementById('actions');
+  const micIssue = /microphone/i.test(message);
+  const screenIssue = /screen|system audio|recording/i.test(message);
+  actions.hidden = !(micIssue || screenIssue);
+  document.getElementById('micSettings').hidden = !micIssue;
+  document.getElementById('screenSettings').hidden = !screenIssue;
 });
 
 window.tanay.onMeta((meta) => {
@@ -204,6 +261,8 @@ document.getElementById('clear').addEventListener('click', () => {
   pendingSwap = false;
   captionEl.textContent = '';
   transcriptParts = [];
+  promptEl.value = '';
+  growPrompt();
   renderTranscript();
   paint();
   window.tanay.clear();
@@ -211,5 +270,7 @@ document.getElementById('clear').addEventListener('click', () => {
 document.getElementById('hide').addEventListener('click', () => window.tanay.close());
 document.getElementById('settings').addEventListener('click', () => window.tanay.settings());
 document.getElementById('micSettings').addEventListener('click', () => window.tanay.openMicSettings());
+document.getElementById('screenSettings').addEventListener('click', () => window.tanay.openScreenSettings());
 
+growPrompt();
 paint();

@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { writeWav, concatInt16, tail } = require('./wav');
+const { CloudyEar } = require('./CloudyEar');
 
 const SAMPLE_RATE = 16000; // the renderer resamples to this before sending
 const MS_PER_SAMPLE = 1000 / SAMPLE_RATE;
@@ -36,7 +37,7 @@ function cleanup(text) {
 }
 
 /**
- * TanayVoice — on-device streaming transcription.
+ * CloudyVoice — on-device streaming transcription.
  *
  * Audio arrives as 16 kHz Int16 chunks. An adaptive energy VAD segments speech
  * into utterances; each utterance is transcribed with whisper.cpp on Metal.
@@ -45,7 +46,7 @@ function cleanup(text) {
  *
  * Events: 'partial' (text, isFinal:false), 'final' (text), 'status', 'error'
  */
-class TanayVoice extends EventEmitter {
+class CloudyVoice extends EventEmitter {
   constructor(cfg) {
     super();
     this.cfg = cfg;
@@ -58,14 +59,34 @@ class TanayVoice extends EventEmitter {
     this.running = false;
     this.busy = false;
     this.queuedFinal = null;
-    this.tmpDir = path.join(os.tmpdir(), 'tanayvoice');
-    this.lastFinal = '';
+    this.tmpDir = path.join(os.tmpdir(), 'cloudyvoice');
+    this.lastFinal = { text: '', at: 0 };
     this.partialText = '';
+    // The text of the utterance that just closed. It stays readable while the
+    // final decode runs, so ⌘J cannot fall back to an older question.
+    this.pendingText = '';
+    this.pendingAt = 0;
+    this.utteranceId = 0;
+    this.segStartAt = 0;
+    this.finalizing = false;
     this._seq = 0;
+    // Bumped whenever an utterance closes or the session resets; a caption that
+    // resolves afterwards is stale and must be dropped.
+    this._epoch = 0;
     // Pre-roll: keep the last few chunks of "silence" so the first syllable of a
     // question is not clipped when the VAD fires late.
     this.pre = [];
     this.preMsAdded = 0;
+
+    // engine: 'parakeet' (FluidAudio, Neural Engine) or 'whisper' (whisper.cpp).
+    this.ear = null;
+    if (cfg.engine === 'parakeet') {
+      this.ear = new CloudyEar({ bin: cfg.parakeetBin, modelsDir: cfg.parakeetModelsDir });
+      this.ear.on('loading', () => this.emit('loading'));
+      this.ear.on('ready', () => this.emit('ready'));
+      this.ear.on('progress', (percent) => this.emit('progress', percent));
+      this.ear.on('error', (message) => this.emit('error', `CloudyEar: ${message}`));
+    }
   }
 
   get modelPath() {
@@ -79,14 +100,15 @@ class TanayVoice extends EventEmitter {
   }
 
   check() {
+    if (this.ear) return this.ear.check();
     if (!fs.existsSync(this.cfg.bin)) {
       return `whisper.cpp CLI not found at "${this.cfg.bin}". Run: brew install whisper-cpp`;
     }
     if (!fs.existsSync(this.modelPath)) {
-      return `TanayVoice model missing: ${this.modelPath}\nRun: npm run get-model (or download ggml-base.en.bin from huggingface.co/ggerganov/whisper.cpp)`;
+      return `CloudyVoice model missing: ${this.modelPath}\nRun: npm run get-model (or download ggml-base.en.bin from huggingface.co/ggerganov/whisper.cpp)`;
     }
     if (this.cfg.partialModelPath && !fs.existsSync(this.cfg.partialModelPath)) {
-      return `TanayVoice caption model missing: ${this.cfg.partialModelPath}`;
+      return `CloudyVoice caption model missing: ${this.cfg.partialModelPath}`;
     }
     return null;
   }
@@ -100,6 +122,8 @@ class TanayVoice extends EventEmitter {
     fs.mkdirSync(this.tmpDir, { recursive: true });
     this.running = true;
     this.reset();
+    // Parakeet loads its model once; start that now rather than on the first question.
+    this.ear?.warm();
     this.emit('status', 'listening');
     return true;
   }
@@ -110,15 +134,34 @@ class TanayVoice extends EventEmitter {
     this.emit('status', 'idle');
   }
 
+  /** Release the helper process (app quit). */
+  shutdown() {
+    this.stop();
+    this.ear?.shutdown();
+  }
+
   reset() {
+    this._epoch += 1;
     this.seg = [];
     this.segMs = 0;
     this.silenceMs = 0;
     this.speaking = false;
     this.partialText = '';
+    this.pendingText = '';
+    this.pendingAt = 0;
     this.queuedFinal = null;
+    this.lastPartialAt = 0;
+    this.segStartAt = 0;
+    this.finalizing = false;
     this.pre = [];
     this.preMsAdded = 0;
+    this.lastFinal = { text: '', at: 0 };
+  }
+
+  /** Clear the session without stopping the recogniser (⌘⇧R). */
+  clear() {
+    this.reset();
+    this.emit('cleared');
   }
 
   /** Feed one chunk of 16 kHz mono Int16 PCM. */
@@ -137,12 +180,16 @@ class TanayVoice extends EventEmitter {
     if (voiced) {
       if (!this.speaking) {
         // Start the utterance with the buffered pre-roll.
-        const preRollChunks = Math.round((this.cfg.preRollMs ?? 300) / ms);
+        const preRollChunks = Math.round((this.cfg.preRollMs ?? 200) / ms);
         const pre = this.pre.slice(-preRollChunks);
         this.seg = pre.slice();
         this.preMsAdded = pre.length * ms;
         this.segMs = this.preMsAdded;
         this.speaking = true;
+        this.segStartAt = Date.now() - this.preMsAdded;
+        // A new utterance makes the previous pending text stale.
+        this.pendingText = '';
+        this.pendingAt = 0;
       }
       this.silenceMs = 0;
       this.seg.push(chunk);
@@ -152,7 +199,7 @@ class TanayVoice extends EventEmitter {
       this.seg.push(chunk); // keep the trailing pause; it helps whisper finish words
     } else {
       this.pre.push(chunk);
-      const keep = Math.round(((this.cfg.preRollMs ?? 300) / ms) || 1) + 2;
+      const keep = Math.round(((this.cfg.preRollMs ?? 200) / ms) || 1) + 2;
       if (this.pre.length > keep) this.pre.shift();
     }
 
@@ -162,7 +209,14 @@ class TanayVoice extends EventEmitter {
         this.finalize();
       } else if (this.segMs >= this.cfg.maxSegmentMs) {
         this.finalize();
-      } else if (!this.busy && !this.queuedFinal && now - this.lastPartialAt >= this.cfg.partialEveryMs) {
+      } else if (
+        !this.busy &&
+        !this.queuedFinal &&
+        // Do not start a caption once the utterance is clearly ending: it would
+        // sit in front of the final and delay it by its whole decode time.
+        this.silenceMs < 120 &&
+        now - this.lastPartialAt >= this.cfg.partialEveryMs
+      ) {
         this.lastPartialAt = now;
         this.emitPartial();
       }
@@ -170,10 +224,12 @@ class TanayVoice extends EventEmitter {
   }
 
   emitPartial() {
+    const epoch = this._epoch;
     const audio = tail(this.seg, Math.round((this.cfg.partialTailMs / 1000) * SAMPLE_RATE));
-    if (audio.length < SAMPLE_RATE * 0.4) return;
+    if (audio.length < SAMPLE_RATE * 0.3) return;
     this.transcribe(audio, 'partial').then((text) => {
-      if (!text || !this.running) return;
+      // The utterance may have closed while this decode was running.
+      if (epoch !== this._epoch || !text || !this.running) return;
       // Ignore a caption that only repeats the previous one.
       if (text === this.partialText) return;
       this.partialText = text;
@@ -182,36 +238,78 @@ class TanayVoice extends EventEmitter {
   }
 
   finalize() {
-    const audio = concatInt16(this.seg);
-    const speechMs = this.segMs - this.silenceMs - this.preMsAdded;
     const wasSpeaking = this.speaking;
+    const speechMs = this.segMs - this.silenceMs - this.preMsAdded;
+    const speechEndAt = Date.now() - Math.max(0, this.silenceMs);
+    const speechStartAt = this.segStartAt || speechEndAt - speechMs;
+    const utteranceId = this.utteranceId + 1;
 
+    // Keep the caption text available through the decode window. ⌘J is pressed
+    // exactly here, and an empty picker used to send it back to the last turn.
+    this.pendingText = this.partialText;
+    this.pendingAt = Date.now();
+    this.utteranceId = utteranceId;
+
+    // Trim most of the trailing pause. Parakeet needs a short tail to finish
+    // the last word; decoding 500 ms of silence only costs time.
+    let trimMs = Math.max(0, this.silenceMs - 150);
+    while (trimMs > 0 && this.seg.length > 1) {
+      const last = this.seg[this.seg.length - 1];
+      const lastMs = last.length * MS_PER_SAMPLE;
+      if (lastMs > trimMs + 60) break; // this chunk still contains speech
+      this.seg.pop();
+      trimMs -= lastMs;
+    }
+
+    const audio = concatInt16(this.seg);
+    this._epoch += 1;
     this.seg = [];
     this.segMs = 0;
     this.silenceMs = 0;
     this.speaking = false;
     this.partialText = '';
     this.preMsAdded = 0;
+    this.segStartAt = 0;
 
-    if (!wasSpeaking || speechMs < this.cfg.minSpeechMs) return;
-    this.enqueueFinal(audio);
-  }
+    if (!wasSpeaking) return;
 
-  enqueueFinal(audio) {
-    // One final at a time; if a job is running, merge instead of dropping audio.
-    if (this.busy) {
-      this.queuedFinal = this.queuedFinal ? concatInt16([this.queuedFinal, audio]) : audio;
+    // A very short blip is usually a door or a chair, but do not drop a real
+    // one-word question: the old 400 ms floor swallowed "Why?" completely.
+    if (speechMs < 250) {
+      this.emit('dropped', { reason: 'too-short', text: this.pendingText, utteranceId });
       return;
     }
-    this.runFinal(audio);
+
+    this.finalizing = true;
+    this.enqueueFinal(audio, { utteranceId, speechStartAt, speechEndAt });
   }
 
-  runFinal(audio) {
+  enqueueFinal(audio, meta = {}) {
+    // One final at a time; if a job is running, merge instead of dropping audio.
+    if (this.busy) {
+      this.queuedFinal = this.queuedFinal
+        ? { audio: concatInt16([this.queuedFinal.audio, audio]), meta }
+        : { audio, meta };
+      return;
+    }
+    this.runFinal(audio, meta);
+  }
+
+  runFinal(audio, meta = {}) {
+    const startedAt = Date.now();
     this.transcribe(audio, 'final').then((text) => {
-      if (this.running && text && text !== this.lastFinal) {
-        this.lastFinal = text;
-        this.emit('final', text);
+      const now = Date.now();
+      const decodeMs = now - startedAt;
+      // Only a genuine duplicate decode is dropped. The old code compared
+      // against every previous final for the whole session, so a repeated
+      // question (or one after ⌘⇧R) disappeared.
+      const duplicate = text && this.lastFinal.text === text && now - this.lastFinal.at < 1500;
+      if (this.running && text && !duplicate) {
+        this.lastFinal = { text, at: now };
+        this.pendingText = '';
+        this.emit('final', text, { ...meta, decodeMs });
       }
+      this.finalizing = false;
       this.drain();
     });
   }
@@ -221,7 +319,8 @@ class TanayVoice extends EventEmitter {
     if (this.busy || !this.queuedFinal) return;
     const next = this.queuedFinal;
     this.queuedFinal = null;
-    this.runFinal(next);
+    this.finalizing = true;
+    this.runFinal(next.audio, next.meta);
   }
 
   transcribe(int16, kind) {
@@ -233,11 +332,30 @@ class TanayVoice extends EventEmitter {
     try {
       writeWav(wav, int16, SAMPLE_RATE);
     } catch (err) {
-      this.emit('error', `TanayVoice could not write audio: ${err.message}`);
+      this.emit('error', `CloudyVoice could not write audio: ${err.message}`);
       return Promise.resolve('');
     }
 
     this.busy = true;
+
+    const finish = (text) => {
+      this.busy = false;
+      fs.rm(wav, { force: true }, () => {});
+      this.drain();
+      return text;
+    };
+
+    // Parakeet keeps the model loaded, so this is one request over stdin.
+    if (this.ear) {
+      return this.ear
+        .transcribe(wav)
+        .then((text) => finish(cleanup(text)))
+        .catch((err) => {
+          if (kind === 'final') this.emit('error', `CloudyEar failed: ${err.message}`);
+          return finish('');
+        });
+    }
+
     const model = this.modelFor(kind);
     const args = [
       '-m', model,
@@ -266,24 +384,21 @@ class TanayVoice extends EventEmitter {
       const done = (text) => {
         if (settled) return; // 'error' and 'close' can both fire
         settled = true;
-        this.busy = false;
-        fs.rm(wav, { force: true }, () => {});
         fs.rm(`${outBase}.txt`, { force: true }, () => {});
-        this.drain();
-        resolve(text);
+        resolve(finish(text));
       };
 
       child.stderr.on('data', (d) => {
         stderr += d.toString();
       });
       child.on('error', (err) => {
-        this.emit('error', `TanayVoice could not start whisper-cli: ${err.message}`);
+        this.emit('error', `CloudyVoice could not start whisper-cli: ${err.message}`);
         done('');
       });
       child.on('close', (code) => {
         if (code !== 0) {
           const hint = /metal|ggml|model/i.test(stderr) ? stderr.trim().slice(0, 300) : `exit ${code}`;
-          if (kind === 'final') this.emit('error', `TanayVoice failed (${hint})`);
+          if (kind === 'final') this.emit('error', `CloudyVoice failed (${hint})`);
           return done('');
         }
         fs.readFile(`${outBase}.txt`, 'utf8', (err, text) => {
@@ -295,4 +410,4 @@ class TanayVoice extends EventEmitter {
   }
 }
 
-module.exports = { TanayVoice, SAMPLE_RATE };
+module.exports = { CloudyVoice, SAMPLE_RATE };

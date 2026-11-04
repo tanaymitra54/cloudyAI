@@ -12,6 +12,7 @@
         <span class="label" id="status">idle</span>
         <span class="grow"></span>
         <button id="listen" title="Start / stop listening (⌘⇧L)">listen</button>
+        <button id="shot" title="Capture the screen and answer from it">📷</button>
         <button id="clear" title="Clear (⌘⇧R)">clear</button>
         <button id="settings" title="Settings">⚙</button>
         <button id="hide" title="Hide overlay (⌘⇧H)">×</button>
@@ -26,6 +27,16 @@
       </div>
       <div class="actions" id="actions" hidden>
         <button id="micSettings">Open microphone settings</button>
+        <button id="screenSettings">Open screen recording settings</button>
+      </div>
+      <div class="composer">
+        <textarea
+          id="prompt"
+          rows="1"
+          autocomplete="off"
+          placeholder="Type a question or prompt — ⏎ to send, ⇧⏎ for a new line"
+        ></textarea>
+        <button id="send" title="Send (⏎)">↵</button>
       </div>
       <footer class="foot"><span id="meta"></span></footer>
     </div>

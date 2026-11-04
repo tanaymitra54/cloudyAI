@@ -2,6 +2,7 @@
 
 const deepseek = require('./deepseek');
 const opencodego = require('./opencodego');
+const commandcodeapi = require('./commandcodeapi');
 const cli = require('./cli');
 const config = require('../config');
 
@@ -35,27 +36,38 @@ class AnswerEngine {
     const run =
       cfg.provider === 'opencode-go'
         ? () => opencodego.complete({ cfg: cfg.opencodeGo, system: 'Reply with one word.', user: 'hi', onDelta: noop, maxTokens: 1 })
-        : cfg.provider === 'deepseek'
-          ? () => deepseek.complete({ cfg: cfg.deepseek, system: 'Reply with one word.', user: 'hi', onDelta: noop, maxTokens: 1 })
-          : null;
+        : cfg.provider === 'commandcode-api'
+          ? () => commandcodeapi.complete({ cfg: cfg.commandCodeApi, system: 'Reply with one word.', user: 'hi', onDelta: noop, maxTokens: 1 })
+          : cfg.provider === 'deepseek'
+            ? () => deepseek.complete({ cfg: cfg.deepseek, system: 'Reply with one word.', user: 'hi', onDelta: noop, maxTokens: 1 })
+            : null;
     if (!run) return;
     run().catch(() => {});
   }
 
-  callProvider(provider, modelOverride, { system, user, signal, onDelta }) {
+  callProvider(provider, modelOverride, { system, user, images, signal, onDelta }) {
     const cfg = config.load();
     if (provider === 'deepseek') {
       const section = modelOverride ? { ...cfg.deepseek, model: modelOverride } : cfg.deepseek;
-      return deepseek.complete({ cfg: section, system, user, signal, onDelta });
+      return deepseek.complete({ cfg: section, system, user, images, signal, onDelta });
     }
     if (provider === 'opencode-go') {
       const section = modelOverride ? { ...cfg.opencodeGo, model: modelOverride } : cfg.opencodeGo;
-      return opencodego.complete({ cfg: section, system, user, signal, onDelta });
+      return opencodego.complete({ cfg: section, system, user, images, signal, onDelta });
+    }
+    if (provider === 'commandcode-api') {
+      const section = modelOverride ? { ...cfg.commandCodeApi, model: modelOverride } : cfg.commandCodeApi;
+      return commandcodeapi.complete({ cfg: section, system, user, images, signal, onDelta });
+    }
+    if (images?.length) {
+      return Promise.reject(
+        new Error('Screenshots need a vision provider.\nSwitch to opencode-go, commandcode-api, or deepseek in Settings and try again.')
+      );
     }
     return cli.complete({ provider, cfg: cfg[provider] || {}, system, user, signal, onDelta });
   }
 
-  async ask({ system, user }) {
+  async ask({ system, user, images = null }) {
     const cfg = config.load();
     const seq = this.seq + 1;
     this.cancel();
@@ -82,13 +94,14 @@ class AnswerEngine {
         if (winner === own) this.onDelta?.(delta);
       };
 
-      return this.callProvider(provider, modelOverride, { system, user, signal, onDelta })
+      return this.callProvider(provider, modelOverride, { system, user, images, signal, onDelta })
         .then((r) => ({ own, text: r.text }))
         .catch((err) => ({ own, error: err }));
     };
 
     const hedge = cfg.hedge || {};
-    const useHedge = hedge.enabled && (cfg.provider === 'opencode-go' || cfg.provider === 'deepseek');
+    const useHedge =
+      hedge.enabled && (cfg.provider === 'opencode-go' || cfg.provider === 'commandcode-api' || cfg.provider === 'deepseek');
 
     const jobs = [attempt(cfg.provider, null)];
     if (useHedge) {

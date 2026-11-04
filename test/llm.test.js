@@ -14,6 +14,7 @@ function sseServer(parts, { delayMs = 0 } = {}) {
       let body = '';
       req.on('data', (d) => (body += d));
       req.on('end', async () => {
+        server.bodies.push(body);
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         for (const p of parts) {
           res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
@@ -23,6 +24,7 @@ function sseServer(parts, { delayMs = 0 } = {}) {
         res.end();
       });
     });
+    server.bodies = [];
     server.listen(0, '127.0.0.1', () => resolve(server));
   });
 }
@@ -79,6 +81,28 @@ function testMissingKey() {
     });
 }
 
+async function testImageContent() {
+  const server = await sseServer(['ok']);
+  const port = server.address().port;
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==';
+
+  await deepseek.complete({
+    cfg: { apiKey: 'test', baseUrl: `http://127.0.0.1:${port}`, model: 'deepseek-chat' },
+    system: 'sys',
+    user: 'what is on screen?',
+    images: [dataUrl],
+  });
+  server.close();
+
+  const body = JSON.parse(server.bodies[0]);
+  const user = body.messages.find((m) => m.role === 'user');
+  assert.ok(Array.isArray(user.content), 'user content should be a multi-part array');
+  assert.strictEqual(user.content[0].type, 'text');
+  assert.strictEqual(user.content[0].text, 'what is on screen?');
+  assert.deepStrictEqual(user.content[1], { type: 'image_url', image_url: { url: dataUrl } });
+  console.log('ok   screenshots become image_url content parts');
+}
+
 function testOpencodeParser() {
   const raw = [
     JSON.stringify({ type: 'step_start' }),
@@ -93,6 +117,7 @@ function testOpencodeParser() {
   await testStreaming();
   await testAbort();
   await testMissingKey();
+  await testImageContent();
   testOpencodeParser();
   console.log('\nall llm tests passed');
 })().catch((err) => {

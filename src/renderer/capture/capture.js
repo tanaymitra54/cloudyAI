@@ -3,7 +3,7 @@
 // 16 kHz mono Int16 PCM capture.
 //
 // A microphone stream is resampled in an AudioWorklet (off the main thread) and
-// posted to the preload bridge in 100 ms chunks. 100 ms keeps TanayVoice's VAD
+// posted to the preload bridge in 100 ms chunks. 100 ms keeps CloudyVoice's VAD
 // responsive without flooding IPC.
 
 const TARGET_RATE = 16000;
@@ -68,7 +68,7 @@ async function start() {
     console.log('[capture] error:', err.name, '-', err.message);
     const message =
       err.name === 'NotAllowedError'
-        ? 'Permission denied. Enable TanayAI in System Settings → Privacy & Security → Microphone.'
+        ? 'Permission denied. Enable CloudyAI in System Settings → Privacy & Security → Microphone.'
         : `${err.name}: ${err.message || err}`;
     throw new Error(message);
   }

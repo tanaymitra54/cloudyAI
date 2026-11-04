@@ -170,9 +170,12 @@ body {
 .answer hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.09); margin: 8px 0; }
 
 .actions {
+  display: flex;
+  gap: 6px;
   padding: 0 14px 10px;
 }
 .actions[hidden] { display: none; }
+.actions button[hidden] { display: none; }
 .actions button {
   font: inherit;
   font-size: 11px;
@@ -184,6 +187,54 @@ body {
   cursor: pointer;
 }
 .actions button:hover { background: #f6d58c; }
+
+/* Typed questions live at the bottom: the answer area scrolls, this stays put. */
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.composer textarea {
+  flex: 1;
+  min-height: 28px;
+  max-height: 96px;
+  resize: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e8e8ea;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 5px 9px;
+  outline: none;
+  overflow-y: auto;
+}
+
+.composer textarea::placeholder { color: #63656e; }
+.composer textarea:focus { border-color: rgba(126, 226, 168, 0.65); background: rgba(255, 255, 255, 0.09); }
+.composer textarea::-webkit-scrollbar { width: 6px; }
+.composer textarea::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 3px; }
+
+.composer button {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: #0b0c0e;
+  background: #7ee2a8;
+  border: none;
+  border-radius: 8px;
+  width: 30px;
+  height: 28px;
+  cursor: pointer;
+  flex: none;
+}
+.composer button:hover { background: #93ebba; }
+.composer button:disabled { background: rgba(255, 255, 255, 0.12); color: #63656e; cursor: default; }
 
 .foot {
   padding: 5px 12px 7px;

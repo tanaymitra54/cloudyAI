@@ -14,9 +14,12 @@ contextBridge.exposeInMainWorld('tanay', {
   onError: (cb) => ipcRenderer.on('tanay:error', (_e, message) => cb(message)),
   onMeta: (cb) => ipcRenderer.on('tanay:meta', (_e, meta) => cb(meta)),
   listen: () => ipcRenderer.send('tanay:listen-toggle'),
+  askText: (text) => ipcRenderer.send('tanay:ask-text', text),
+  screenshot: (text) => ipcRenderer.invoke('tanay:shot', text),
   clear: () => ipcRenderer.send('tanay:clear'),
   settings: () => ipcRenderer.send('tanay:settings'),
   openMicSettings: () => ipcRenderer.send('tanay:open-mic-settings'),
+  openScreenSettings: () => ipcRenderer.send('tanay:open-screen-settings'),
   close: () => ipcRenderer.send('tanay:overlay-hide'),
   resize: (height) => ipcRenderer.send('tanay:overlay-resize', height),
 });

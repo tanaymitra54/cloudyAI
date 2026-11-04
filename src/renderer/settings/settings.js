@@ -22,6 +22,8 @@ const modelEl = document.getElementById('model');
 const apiKeyEl = document.getElementById('apiKey');
 const keyHintEl = document.getElementById('keyHint');
 const sttModelEl = document.getElementById('sttModel');
+const sttEngineEl = document.getElementById('sttEngine');
+const audioSourceEl = document.getElementById('audioSource');
 const autoAnswerEl = document.getElementById('autoAnswer');
 const statusEl = document.getElementById('status');
 
@@ -116,6 +118,7 @@ window.addEventListener('keydown', (event) => {
 
 function currentModel() {
   if (state.provider === 'opencode-go') return state.models.opencodeGo || '';
+  if (state.provider === 'commandcode-api') return state.models.commandCodeApi || '';
   if (state.provider === 'deepseek') return state.models.deepseek || '';
   return '';
 }
@@ -133,10 +136,15 @@ function syncKeyField() {
   }
   if (fromEnv) {
     apiKeyEl.placeholder = 'set by environment (.env)';
-    keyHintEl.textContent = 'The key comes from OPENCODE_API_KEY / DEEPSEEK_API_KEY in .env; that wins over anything saved here.';
+    keyHintEl.textContent =
+      'The key comes from OPENCODE_API_KEY / COMMANDCODE_API_KEY / DEEPSEEK_API_KEY in .env; that wins over anything saved here.';
   } else if (hasStored) {
     apiKeyEl.placeholder = '•••••••• stored (leave blank to keep)';
     keyHintEl.textContent = 'A key is stored. Type a new one to replace it.';
+  } else if (state.provider === 'commandcode-api') {
+    apiKeyEl.placeholder = 'paste Command Code API key';
+    keyHintEl.textContent =
+      'Create it at commandcode.ai/settings/keys (or in Studio). This is the Provider API key, not the commandcode CLI login.';
   } else {
     apiKeyEl.placeholder = 'paste key';
     keyHintEl.textContent = 'Paste your key — it is saved to config.json with owner-only permissions.';
@@ -159,6 +167,8 @@ function syncModelField() {
       { id: 'deepseek-chat', name: 'deepseek-chat' },
       { id: 'deepseek-reasoner', name: 'deepseek-reasoner' },
     ];
+  } else if (state.provider === 'commandcode-api') {
+    list = state.commandCodeModels?.length ? state.commandCodeModels : [{ id: value, name: value || 'no models found' }];
   } else if (state.answerModels?.length) {
     list = state.answerModels;
   } else {
@@ -196,6 +206,7 @@ document.getElementById('close').addEventListener('click', () => window.tanaySet
 document.getElementById('save').addEventListener('click', async () => {
   const models = { ...state.models };
   if (state.provider === 'opencode-go') models.opencodeGo = modelEl.value.trim();
+  if (state.provider === 'commandcode-api') models.commandCodeApi = modelEl.value.trim();
   if (state.provider === 'deepseek') models.deepseek = modelEl.value.trim();
 
   const payload = {
@@ -203,7 +214,7 @@ document.getElementById('save').addEventListener('click', async () => {
     autoAnswer: autoAnswerEl.checked,
     provider: state.provider,
     models,
-    transcription: { modelPath: sttModelEl.value },
+    transcription: { engine: sttEngineEl.value, source: audioSourceEl.value, modelPath: sttModelEl.value },
   };
   if (apiKeyEl.value.trim()) payload.apiKey = apiKeyEl.value.trim();
 
@@ -218,6 +229,14 @@ document.getElementById('save').addEventListener('click', async () => {
   }
   if (result.models) state.models = { ...state.models, ...result.models };
   if (result.hasKey) state.hasKey = result.hasKey;
+  // A newly saved key can unlock the live model list.
+  try {
+    const refreshed = await window.tanaySettings.get();
+    if (refreshed.commandCodeModels) state.commandCodeModels = refreshed.commandCodeModels;
+    if (refreshed.answerModels) state.answerModels = refreshed.answerModels;
+  } catch {
+    /* keep the list we already have */
+  }
   syncModelField();
   syncKeyField();
 });
@@ -229,6 +248,8 @@ document.getElementById('save').addEventListener('click', async () => {
   providerEl.value = loaded.provider;
 
   // Populate the recogniser list from the models actually present on disk.
+  sttEngineEl.value = loaded.transcription?.engine === 'whisper' ? 'whisper' : 'parakeet';
+  audioSourceEl.value = loaded.transcription?.source === 'mic' ? 'mic' : 'system';
   const models = loaded.transcription?.available || [];
   sttModelEl.innerHTML = models
     .map((m) => `<option value="${m.file}">${m.name.replace(/^ggml-|\.bin$/g, '')}</option>`)

@@ -1,4 +1,4 @@
-# TanayAI — local-first AI copilot
+# CloudyAI — local-first AI copilot
 
 An always-on-top answer panel that stays out of screen shares, driven by
 **on-device speech-to-text** and your choice of **DeepSeek**, **opencode**, or
@@ -10,21 +10,24 @@ local or bring-your-own-key equivalents.
 
 ## What changed vs. the original
 
-| | Clause AI 1.0.19 | TanayAI |
+| | Clause AI 1.0.19 | CloudyAI |
 |---|---|---|
-| Speech to text | Deepgram streaming (cloud, server-issued key) | **TanayVoice** — whisper.cpp + Metal, fully on-device |
-| Answers | Google Gemini 3.x (cloud, server-issued key) | **DeepSeek API** (your key), or `opencode` / `commandcode` CLI |
+| Speech to text | Deepgram streaming (cloud, server-issued key) | **CloudyVoice** — Parakeet 0.6B on the Neural Engine (whisper.cpp fallback), fully on-device |
+| Answers | Google Gemini 3.x (cloud, server-issued key) | **DeepSeek / Command Code API** (your key), or `opencode` / `commandcode` CLI |
 | Accounts | Supabase auth, subscriptions, vouchers | none |
 | Telemetry | `clauseai.in/api` analytics + diagnostics | none |
 | Overlay | `setContentProtection` + screen-saver level | same technique |
-| Audio | system loopback + mic | mic (see below) |
+| Questions | speech only | speech, typed text, or a **screenshot** of the screen |
+| Audio | system loopback + mic | **system audio only** (ScreenCaptureKit), mic optional and off |
 
 ## Requirements
 
 - macOS on Apple Silicon
 - Node.js 20+
-- `brew install whisper-cpp`
-- A DeepSeek API key, or an `opencode` / `commandcode` install
+- Swift 6.2+ (Command Line Tools are enough) for the two helpers:
+  `npm run build:ear` and `npm run build:audio`
+- Optional fallback: `brew install whisper-cpp` + `npm run get-model`
+- A DeepSeek or Command Code API key, or an `opencode` / `commandcode` install
 
 ## Install
 
@@ -35,19 +38,21 @@ npm run get-model             # ggml-base.en.bin (~142 MB)
 npm start
 ```
 
-Grant microphone access when macOS asks. The panel appears top-centre; the
-menu-bar ring icon controls listening.
+Grant **Screen & System Audio Recording** access to CloudyAI when macOS asks
+(System Settings → Privacy & Security → Screen & System Audio Recording). The
+system-audio helper fails closed if it is denied; it never falls back to the
+microphone. macOS may ask for a relaunch after the grant.
 
-**Already installed on this Mac:** `/Applications/TanayAI.app`
+**Already installed on this Mac:** `/Applications/CloudyAI.app`
 Launch it from Finder or Spotlight. It is ad-hoc signed (not notarized), so the
 first launch may need right-click → Open. Mic permission is requested once.
 
 To rebuild after changing code:
 
 ```bash
-npm run dist -- --dir                 # dist/mac-arm64/TanayAI.app
-codesign --force --deep --sign - dist/mac-arm64/TanayAI.app
-ditto dist/mac-arm64/TanayAI.app /Applications/TanayAI.app
+npm run dist -- --dir                 # dist/mac-arm64/CloudyAI.app
+codesign --force --deep --sign - dist/mac-arm64/CloudyAI.app
+ditto dist/mac-arm64/CloudyAI.app /Applications/CloudyAI.app
 ```
 
 ## Settings
@@ -59,6 +64,9 @@ Changes apply immediately — no restart.
   At least one modifier is required so a plain letter can't hijack normal typing.
   If a combination is already owned by another app, it is reported by name
   instead of silently failing.
+- **Engine / audio source** — Parakeet on the Neural Engine (default) or
+  whisper.cpp; system audio (default) or the microphone. Switching restarts the
+  recogniser live.
 - **Provider / model** — switches the answer backend live.
 - **Auto-answer** — same toggle as the menu-bar checkbox.
 
@@ -89,15 +97,17 @@ thing.
 
 ## Manual vs auto
 
-By default TanayAI **listens continuously but answers only when you press ⌘J**.
-That is deliberate: one microphone hears both sides of the call, so auto-answering
-ends up responding to your own voice. Pressing ⌘J hands it the most recent thing
-that was actually a question:
+By default CloudyAI **listens to the call and answers only when you press ⌘J**.
+Only system audio is captured, so your own voice is not in the transcript.
+Pressing ⌘J uses the newest utterance:
 
-- it prefers the caption still being spoken, so you can answer mid-question;
-- otherwise it walks back through the last 8 utterances and takes the newest one
-  that scores as a question;
-- if nothing scored, it answers the last thing said rather than doing nothing.
+- if a question is still open or its decode is running, the live/pending text is
+  used, so you can answer mid-question;
+- otherwise the newest utterance from the last 20 seconds is answered, even if
+  the question heuristic scores it low — it never walks back to an older
+  question while a newer one exists;
+- if nothing was heard in that window, it says so instead of answering stale
+  text.
 
 Pressing ⌘J twice, or while an answer is already streaming, does not restart the
 request — it would throw away tokens already on screen.
@@ -108,44 +118,73 @@ if you want the speculative behaviour instead.
 ## How the pipeline works
 
 ```
-mic ──getUserMedia──► AudioWorklet (resample → 16 kHz Int16, 100 ms chunks)
-        │
-        ▼
-   TanayVoice ── energy VAD ──► utterance ──► whisper-cli (Metal) ──► text
-        │                                    └── live caption (tail 5 s)
+system audio ── ScreenCaptureKit helper (16 kHz mono) ──► CloudyVoice ── energy VAD ──► utterance ──► CloudyEar (Parakeet, ANE) ──► text
+        │                                                                                          └── whisper-cli fallback
+        │                                                                                          └── live caption (tail 4.5 s)
         ▼
   question heuristic ──► DeepSeek / opencode / commandcode ──► streaming answer ──► overlay
 ```
 
-- `silenceMs` (380 ms) closes an utterance; `maxSegmentMs` (8 s) forces a cut on
-  continuous speech.
+- Only the **system output** is captured. Your microphone is off by default, so
+  your own voice is never transcribed and the other participant is captured
+  digitally instead of through the speakers.
+- `silenceMs` (500 ms) closes an utterance; `maxSegmentMs` (15 s) forces a cut on
+  continuous speech. The endpointing is deliberately shorter than the old
+  700 ms: system audio is clean, and the final decode is ~140 ms.
 - The question heuristic only auto-answers interrogative utterances. Anything
-  else is answered with `⌘⇧↵` — this avoids the model replying to your own
-  answers.
+  else is answered with `⌘⇧↵`.
 - Starting a new request cancels the previous one. A stale answer mid-call is
   worse than none.
 
+## Speech engine
+
+Two local engines, switchable in Settings → Transcription:
+
+| | Parakeet Unified 0.6B (default) | whisper.cpp |
+|---|---|---|
+| Runtime | FluidAudio + CoreML on the Neural Engine | whisper.cpp on Metal |
+| Model load | once at startup, stays in memory | ~0.33 s on every utterance |
+| Decode a 6 s question | ~0.17–0.25 s | ~0.52 s |
+| Disk | ~596 MB, downloaded on first use | 141 MB (base.en) |
+| Punctuation + capitals | yes | no |
+
+`npm run build:ear` compiles the helper (`native/CloudyEar`, a Swift package).
+The first launch downloads the CoreML model to
+`~/Library/Application Support/FluidAudio/Models`; the panel shows “loading
+speech model…” while that happens. After that the model stays warm and each
+utterance is one line over stdin to a long-lived process.
+
+If the helper is missing, CloudyAI falls back to whisper.cpp and says so instead
+of going silent. Force the fallback any time in Settings → Transcription →
+Engine.
+
+Measured on this M1 / 8 GB with `node test/cloudyvoice.test.js` on the same 6.2 s
+clip: whisper final at 2.77 s, Parakeet final at 1.65 s. The gap is the model
+load whisper pays on every decode, plus the decode itself.
+
 ## Configuration
 
-`~/Library/Application Support/TanayAI/config.json`
+`~/Library/Application Support/CloudyAI/config.json`
 
 ```jsonc
 {
-  "provider": "deepseek",            // deepseek | opencode | commandcode
+  "provider": "deepseek",            // opencode-go | commandcode-api | deepseek | opencode | commandcode
+  "commandCodeApi": { "apiKey": "", "baseUrl": "https://api.commandcode.ai/provider/v1", "model": "deepseek/deepseek-v4-flash" },
   "deepseek": { "apiKey": "", "baseUrl": "https://api.deepseek.com", "model": "deepseek-chat" },
   "opencode":  { "bin": "opencode",  "model": "deepseek/deepseek-chat", "timeoutMs": 90000 },
   "commandcode": { "bin": "commandcode", "args": ["-p", "{prompt}"], "timeoutMs": 90000 },
-  "tanayvoice": { "bin": "whisper-cli", "modelPath": "", "threads": 4, "language": "en",
-                  "silenceMs": 380, "minSpeechMs": 600, "maxSegmentMs": 8000,
-                  "partialEveryMs": 1200, "partialTailMs": 5000 },
-  "overlay": { "width": 640, "height": 430, "opacity": 0.96 },
+  "cloudyvoice": { "engine": "parakeet", "source": "system",
+                  "bin": "whisper-cli", "modelPath": "", "threads": 4, "language": "en",
+                  "silenceMs": 500, "minSpeechMs": 250, "maxSegmentMs": 15000,
+                  "partialEveryMs": 900, "partialTailMs": 4500 },
+  "overlay": { "width": 720, "height": 620, "opacity": 0.96 },
   "profile": "interview",            // interview | sales | generic
   "resumePath": ""                   // absolute path to a .txt/.md resume, optional
 }
 ```
 
-The API key is read from `DEEPSEEK_API_KEY` when present, so it never has to be
-written to disk.
+The API key is read from `OPENCODE_API_KEY`, `COMMANDCODE_API_KEY`, or
+`DEEPSEEK_API_KEY` when present, so it never has to be written to disk.
 
 ### Why DeepSeek is the default
 
@@ -159,7 +198,14 @@ argv template in config, so any CLI that takes a prompt as one argument works.
 
 ```bash
 npm run smoke        # boots both windows, reports state, exits
-npm test             # LLM layer: SSE streaming, abort, error paths
+npm test             # LLM, detection, picker, VAD lifecycle, tray
+npx electron . --composer-test   # typed box, Enter-to-send, screenshot attach
+npx electron . --shot-test       # capture the screen, save the image, answer from it
+npm run build:ear    # compile the Parakeet helper (Swift package)
+npm run build:audio  # compile the system-audio helper (ScreenCaptureKit)
+npx electron . --sysaudio-test   # capture system audio, report frames + RMS
+npx electron . --listen-test     # system audio -> VAD -> Parakeet -> transcript
+CLOUDY_ENGINE=parakeet node test/cloudyvoice.test.js /tmp/q.wav   # real VAD + Parakeet
 npm run test:stt -- /path/to/16k-mono.wav   # real VAD + whisper pass
 ```
 
@@ -195,13 +241,20 @@ Four backends, switchable from the menu-bar menu at runtime:
 | Provider | Path | Typical latency |
 |---|---|---|
 | `opencode-go` | direct HTTPS to `opencode.ai/zen/go/v1` | **~1.4-2.5 s** to first token |
+| `commandcode-api` | direct HTTPS to `api.commandcode.ai/provider/v1` | ~1-2 s |
 | `deepseek` | direct HTTPS to `api.deepseek.com` | ~1-2 s |
 | `opencode` | shells out to `opencode run` | 3-5 s |
 | `commandcode` | shells out to a configurable CLI | 3-5 s |
 
-`opencode-go` and `deepseek` stream token by token, so text appears as it is
-generated. The two CLI backends buffer the entire answer before returning, which
-is why they are not the default.
+`opencode-go`, `commandcode-api`, and `deepseek` stream token by token, so text
+appears as it is generated. The two CLI backends buffer the entire answer before
+returning, which is why they are not the default.
+
+`commandcode-api` uses your own Command Code Provider API key (create one at
+https://commandcode.ai/settings/keys) — it never reads the `commandcode` CLI's
+stored login. The model picker lists the live catalogue from
+`/provider/v1/models`, limited to models that answer on the OpenAI-compatible
+`/chat/completions` route.
 
 Which model to use is a measured question, not a taste question:
 
@@ -217,23 +270,21 @@ question no matter how fast it fails. Set the winner in `opencodeGo.model`.
 
 ## Measured performance
 
-M1, 8 GB, measured rather than estimated. Two paths, because they are different
-experiences:
+M1, 8 GB, measured rather than estimated, with the system-audio path:
 
-| Stage | Manual (⌘J, default) | Auto-answer |
-|---|---|---|
-| pause that closes an utterance | 700 ms | 260 ms |
-| whisper decode (base.en, ~5 s utterance) | ~1.0 s | ~1.0 s |
-| caption → first answer token | 1.4-3.0 s | 1.4-3.0 s |
-| speech end → first token | sum of the above | **~0.5 s** (speculative) |
+| Stage | Time |
+|---|---|
+| pause that closes an utterance | 500 ms |
+| Parakeet decode (~6 s question, measured) | **143 ms** |
+| speech end → transcript in the panel (measured) | **643 ms** |
+| transcript → first answer token | 1.4–3.0 s (provider) |
 
-Manual mode is deliberately a little slower at closing an utterance: a 260 ms
-pause is not a sentence boundary, and cutting there was splitting questions into
-fragments, which is what made transcription look wrong. You read the transcript
-and then press ⌘J, so that 440 ms is not in your reaction path.
+Before this pass the same pipeline used a 700 ms pause, a 100 ms chunk
+quantiser, an 8 s caption tail and a caption decode that could sit in front of
+the final. That put stop→final around 1.0–1.1 s.
 
-Auto-answer keeps the fast path and starts answering from the live caption; it
-is off by default because one microphone hears both sides of the call.
+Endpointing is configurable (`cloudyvoice.silenceMs`). 500 ms is the balance
+used here: shorter starts splitting questions at natural breaths.
 
 ### Why `deepseek-v4.1-flash` is the default
 
@@ -258,9 +309,8 @@ larger `max_tokens`, because they spend the budget on internal reasoning —
 
 ## How questions are detected
 
-A copilot hears both sides of the call. A naive "contains what/how/why" check
-fires on the candidate's own answers, which is worse than staying silent. Each
-utterance is scored (`src/main/detection.js`):
+A copilot hears statements as well as questions, and answering every remark is
+worse than staying silent. Each utterance is scored (`src/main/detection.js`):
 
 | Signal | Weight |
 |---|---|
@@ -292,6 +342,28 @@ requires a real `?` and 5+ words — an early version answered
   appearing in answers.
 - 200 ms of audio before speech onset is kept, so a question never loses its
   first syllable to a late VAD trigger.
+
+## Typed questions and screenshots
+
+The panel is not only a listener:
+
+- **Type in the box at the bottom** and press `⏎` (`⇧⏎` for a new line). The
+  text goes to the model exactly as written, with no waiting for speech and no
+  question detection.
+- **`📷` captures the screen under the pointer** and attaches it to the question.
+  If the box has text, that text is what gets asked; if it is empty, CloudyAI
+  reads the screen and answers the most useful thing in it.
+- The answer starts with **On screen:** (one line saying what is visible), then
+  works from the image. If the screen has no explicit question, it describes
+  what is there and gives the next useful step instead of saying “no question
+  detected”.
+- The overlay sets content protection, so the panel itself is never in the
+  screenshot — what the model sees is the window behind it. Verified with
+  `electron . --shot-test`, which saves the exact image sent.
+- Screenshots need a vision model. `opencode-go` models read images; DeepSeek's
+  chat API is text-only.
+- On the first capture macOS asks for **Screen Recording**. If it was denied,
+  the panel says exactly which switch to flip rather than failing silently.
 
 ## The transcript
 
@@ -372,31 +444,40 @@ is ad-hoc signed, so macOS asks again after every rebuild.
 
 ## Known gaps
 
-- **System audio on macOS.** Electron's `audio: 'loopback'` in
-  `setDisplayMediaRequestHandler` is Windows-only; the original app has the same
-  limitation on Mac. TanayAI records the microphone, which hears the call
-  through your speakers/headphones. For clean remote audio install
-  [BlackHole](https://existential.audio/blackhole/) and set it as the input, or
-  add a ScreenCaptureKit helper later.
-- Screenshot/vision answering is not wired up (DeepSeek's chat API is
-  text-only). Use the `opencode` provider for that.
-- whisper.cpp base.en is a latency/accuracy compromise on 8 GB M1. Try
-  `ggml-small.en.bin` if you have headroom, or `ggml-tiny.en.bin` if not.
+- **System audio requires Screen & System Audio Recording permission.** If it is
+  denied, capture fails closed with an instruction — it never silently falls
+  back to the microphone.
+- **The microphone is off by default.** Enable Settings → Audio source →
+  Microphone only if you want to transcribe people in the room.
+- The overlay is excluded from screenshots and live ScreenCaptureKit captures on
+  macOS 27 (verified with both a one-shot SCK screenshot and a live SCStream).
+  Content protection is still best-effort on older macOS versions.
+- Screenshot answering needs a vision model: `opencode-go` handles images,
+  DeepSeek's chat API does not.
+- whisper.cpp is only the fallback now. Parakeet beats it on English accuracy and
+  latency; keep whisper for machines where the helper cannot be built.
 
 ## Files
 
 ```
 src/main/index.js            app lifecycle, IPC, answer flow
 src/main/windows.js          overlay + capture windows, tray
-src/main/stt/TanayVoice.js   VAD + whisper.cpp streaming
+src/main/pick.js             which utterance ⌘J answers (tested in isolation)
+src/main/stt/CloudyVoice.js  VAD + utterance segmentation
+src/main/stt/CloudyEar.js    long-lived Parakeet helper client
+native/CloudyEar/            Swift package: Parakeet Unified 0.6B via FluidAudio
+src/main/audio/CloudyAudio.js  system-audio helper client (PCM frames)
+native/CloudyAudio/          Swift package: ScreenCaptureKit system audio only
+scripts/build-ear.sh         builds the Parakeet helper
+scripts/build-audio.sh       builds the system-audio helper
 src/main/llm/*               DeepSeek SSE + CLI backends
 src/main/prompts.js          prompt profiles
 src/renderer/overlay/*       the panel
-src/renderer/capture/*       microphone + AudioWorklet
+src/renderer/capture/*       microphone + AudioWorklet (optional source)
 ```
 
 ## Legal note
 
-Clause AI is GPL-3.0. TanayAI is an independent implementation: the shipped
+Clause AI is GPL-3.0. CloudyAI is an independent implementation: the shipped
 bundle was inspected to learn the overlay/audio/UX approach, and no source text
 or prompt wording was copied. The prompt profiles here were written fresh.

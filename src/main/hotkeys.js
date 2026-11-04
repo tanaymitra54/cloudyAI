@@ -60,6 +60,11 @@ function normalizeAccelerator(input) {
   return parts.join('+');
 }
 
+// What is actually registered right now, action -> accelerator. Re-registering
+// everything on each save briefly leaves ⌘J unbound, and another app can grab
+// it in that gap. Only changed bindings are touched.
+let current = new Map();
+
 /**
  * Register every binding in `bindings`.
  * @param {Record<string,string>} bindings action -> accelerator
@@ -67,33 +72,60 @@ function normalizeAccelerator(input) {
  * @returns {{registered: Array, failures: Array}}
  */
 function apply(bindings, handlers) {
-  globalShortcut.unregisterAll();
-  const registered = [];
+  const desired = new Map();
   const failures = [];
-
   const seen = new Map();
+
   for (const [action, raw] of Object.entries(bindings || {})) {
     const handler = handlers[action];
     if (!handler) continue; // binding for a feature this build does not have
 
     const accelerator = normalizeAccelerator(raw);
-    if (!accelerator) continue;
+    if (!accelerator) {
+      failures.push({ action, accelerator: '', reason: 'empty accelerator' });
+      continue;
+    }
 
     if (seen.has(accelerator)) {
       failures.push({ action, accelerator, reason: `duplicate of "${seen.get(accelerator)}"` });
       continue;
     }
 
+    seen.set(accelerator, action);
+    desired.set(action, accelerator);
+  }
+
+  // Drop only bindings that disappeared or changed.
+  for (const [action, accelerator] of current) {
+    if (desired.get(action) !== accelerator) {
+      try {
+        globalShortcut.unregister(accelerator);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
+  const registered = [];
+  const active = new Map();
+
+  for (const [action, accelerator] of desired) {
+    if (current.get(action) === accelerator && globalShortcut.isRegistered(accelerator)) {
+      active.set(action, accelerator);
+      registered.push({ action, accelerator });
+      continue;
+    }
+
     let ok = false;
     try {
-      ok = globalShortcut.register(accelerator, handler);
+      ok = globalShortcut.register(accelerator, handlers[action]);
     } catch (err) {
       failures.push({ action, accelerator, reason: err.message });
       continue;
     }
 
     if (ok) {
-      seen.set(accelerator, action);
+      active.set(action, accelerator);
       registered.push({ action, accelerator });
     } else {
       // Another app already owns this combination.
@@ -101,6 +133,7 @@ function apply(bindings, handlers) {
     }
   }
 
+  current = active;
   return { registered, failures };
 }
 

@@ -99,17 +99,29 @@ async function once({ cfg, messages, signal, onDelta, maxTokens }) {
   return { text, finish };
 }
 
+// A plain string is the common case; images turn the same turn into the
+// multi-part content array that OpenAI-compatible vision models expect.
+function userContent(user, images) {
+  if (!images || !images.length) return user;
+  return [
+    { type: 'text', text: user },
+    ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+  ];
+}
+
 /**
  * @param {object} args
  * @param {{apiKey:string, baseUrl:string, model:string, headers?:object}} args.cfg
+ * @param {string[]} [args.images] data URLs to attach to the user turn
  * @param {number} [args.maxTokens]
  * @param {number} [args.maxContinuations] how many times to resume a truncated answer
  * @returns {Promise<{text: string, truncated: boolean}>}
  */
-async function complete({ cfg, system, user, signal, onDelta, maxTokens = 2000, maxContinuations = 2 }) {
+async function complete({ cfg, system, user, images, signal, onDelta, maxTokens = 2000, maxContinuations = 2 }) {
+  const content = userContent(user, images);
   let messages = [
     { role: 'system', content: system },
-    { role: 'user', content: user },
+    { role: 'user', content },
   ];
 
   let full = '';
@@ -139,7 +151,7 @@ async function complete({ cfg, system, user, signal, onDelta, maxTokens = 2000, 
 
     messages = [
       { role: 'system', content: system },
-      { role: 'user', content: user },
+      { role: 'user', content },
       { role: 'assistant', content: full },
       { role: 'user', content: 'Continue exactly where you stopped. Do not repeat anything already written.' },
     ];

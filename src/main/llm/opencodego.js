@@ -8,7 +8,7 @@ const compat = require('./openai-compat');
 // lets the upstream reuse connection state across answers.
 const SESSION_ID = crypto.randomUUID();
 
-function complete({ cfg, system, user, signal, onDelta, maxTokens }) {
+function complete({ cfg, system, user, images, signal, onDelta, maxTokens }) {
   return compat.complete({
     cfg: {
       apiKey: cfg.apiKey,
@@ -20,6 +20,7 @@ function complete({ cfg, system, user, signal, onDelta, maxTokens }) {
     },
     system,
     user,
+    images,
     signal,
     onDelta,
     maxTokens: maxTokens ?? 2000,

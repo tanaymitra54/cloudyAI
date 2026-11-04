@@ -3,6 +3,7 @@
 const path = require('path');
 const { BrowserWindow, screen, nativeImage, Tray, Menu, app } = require('electron');
 const config = require('./config');
+const { trayTigerBitmap } = require('./tray-icon');
 
 let overlay = null;
 let capture = null;
@@ -93,7 +94,7 @@ function createSettings() {
   settingsWin = new BrowserWindow({
     width: 540,
     height: 660,
-    title: 'TanayAI settings',
+    title: 'CloudyAI settings',
     resizable: false,
     minimizable: true,
     maximizable: false,
@@ -108,6 +109,9 @@ function createSettings() {
   });
 
   settingsWin.loadFile(path.join(__dirname, '..', 'renderer', 'settings', 'index.html'));
+  // The settings window shows provider, model and shortcuts; keep it out of
+  // screen shares like the panel.
+  settingsWin.setContentProtection(true);
   settingsWin.once('ready-to-show', () => {
     settingsWin.show();
     app.focus({ steal: true });
@@ -163,23 +167,8 @@ function sendToCapture(command) {
 }
 
 function trayIcon() {
-  // 22x22 template image drawn in-memory: a ring with a filled centre.
   const size = 22;
-  const buf = Buffer.alloc(size * size * 4);
-  const c = (size - 1) / 2;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const d = Math.hypot(x - c, y - c);
-      const ring = d <= 10 && d >= 7;
-      const dot = d <= 3.2;
-      const a = ring || dot ? 255 : 0;
-      const i = (y * size + x) * 4;
-      buf[i] = 0; // B
-      buf[i + 1] = 0; // G
-      buf[i + 2] = 0; // R
-      buf[i + 3] = a; // A
-    }
-  }
+  const buf = trayTigerBitmap(size);
   const img = nativeImage.createFromBitmap(buf, { width: size, height: size });
   img.setTemplateImage(true);
   return img;
@@ -188,7 +177,7 @@ function trayIcon() {
 function buildTray({ onToggle, onListen, onProvider, onQuit, isListening, provider }) {
   if (tray) return tray;
   tray = new Tray(trayIcon());
-  tray.setToolTip('TanayAI');
+  tray.setToolTip('CloudyAI');
   refreshTray({ onToggle, onListen, onProvider, onQuit, isListening, provider });
   return tray;
 }
@@ -234,7 +223,7 @@ function refreshTray({
       { label: 'Settings…', accelerator: undefined, click: onSettings },
       {
         label: 'Answers from',
-        submenu: ['opencode-go', 'deepseek', 'opencode', 'commandcode'].map((p) => ({
+        submenu: ['opencode-go', 'commandcode-api', 'deepseek', 'opencode', 'commandcode'].map((p) => ({
           label: p,
           type: 'radio',
           checked: p === provider,
@@ -242,7 +231,7 @@ function refreshTray({
         })),
       },
       { type: 'separator' },
-      { label: 'Quit TanayAI', click: onQuit },
+      { label: 'Quit CloudyAI', click: onQuit },
     ])
   );
 }

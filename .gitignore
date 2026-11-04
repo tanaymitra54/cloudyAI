@@ -4,3 +4,7 @@ dist/
 *.log
 .DS_Store
 build/icon.iconset/
+native/CloudyEar/.build/
+native/CloudyEar/.swiftpm/
+native/CloudyAudio/.build/
+native/CloudyAudio/.swiftpm/
