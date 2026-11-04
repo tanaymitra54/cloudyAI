@@ -499,6 +499,7 @@ function registerIpcHandlers() {
       defaults: config.DEFAULTS.hotkeys,
       autoAnswer: cfg.autoAnswer,
       provider: cfg.provider,
+      visionModel: cfg.visionModel || '',
       models: {
         opencodeGo: cfg.opencodeGo.model,
         commandCodeApi: cfg.commandCodeApi.model,
@@ -535,6 +536,7 @@ function registerIpcHandlers() {
     if (payload.hotkeys) patch.hotkeys = payload.hotkeys;
     if (typeof payload.autoAnswer === 'boolean') patch.autoAnswer = payload.autoAnswer;
     if (payload.provider) patch.provider = payload.provider;
+    if (typeof payload.visionModel === 'string') patch.visionModel = payload.visionModel.trim();
 
     if (payload.models) {
       patch.opencodeGo = {};

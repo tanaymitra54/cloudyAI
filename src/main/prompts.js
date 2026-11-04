@@ -65,6 +65,17 @@ const PROFILES = { interview: INTERVIEW, sales: SALES, generic: GENERIC };
 
 const TIPS = { interview: INTERVIEW_TIPS, sales: SALES_TIPS, generic: GENERIC_TIPS };
 
+// Code answers are read live, on one screen, mid-interview. A code block that
+// is not C++, not complete, or not compilable is worthless there, so the shape
+// is fixed here rather than left to the model.
+const CODING_RULES = `
+Code answers:
+- Any coding problem, algorithm question or "write code" request is answered in C++17, every time. Never answer in Python, JavaScript, Java, Go or pseudocode, even when the screen or the question shows another language. Only switch if the user explicitly asks for another language in their typed prompt.
+- Put the whole solution in one fenced block that opens with \`\`\`cpp and closes with \`\`\`. Nothing else inside that block — no prose, no test harness, no markdown.
+- The code must compile as written: include the headers it uses, \`using namespace std;\`, and a \`class Solution\` with the exact signature the problem expects. No \`...\`, no "rest of the code here", no comments standing in for logic.
+- Before the block, at most three bullets: the idea, the complexity, and any edge case that matters. After the block, nothing.
+- If the problem has a second useful approach, add one more short bullet saying what it is — do not paste a second full block unless the user asked for it.`;
+
 /**
  * A screenshot is read synchronously from the image: there is no speech to
  * reconstruct, and "No question detected" is the wrong answer when the screen
@@ -86,12 +97,13 @@ Formatting contract:
 - One short sentence, then bullets. Never write paragraphs.
 - Bold the keywords, technologies, numbers and code identifiers.
 - Keep the whole reply under 180 words unless code is required.
-- If the screenshot is unreadable or mostly empty, say exactly what you can see instead of guessing.`;
+- If the screenshot is unreadable or mostly empty, say exactly what you can see instead of guessing.
+${CODING_RULES}`;
 
 function systemPrompt(profile, { screenshot = false } = {}) {
   const tips = TIPS[profile] || INTERVIEW_TIPS;
   if (screenshot) return `${SCREENSHOT_RULES}\n\n${tips}`;
-  return PROFILES[profile] || INTERVIEW;
+  return `${PROFILES[profile] || INTERVIEW}\n${CODING_RULES}`;
 }
 
 function buildUserPrompt({ transcript, context = [], resume = '', profile = 'interview', screenshot = false }) {

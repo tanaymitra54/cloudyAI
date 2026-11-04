@@ -101,6 +101,11 @@ const DEFAULTS = {
     delayMs: 700,
     model: 'claude-haiku-5-5',
   },
+  // Model used for screenshot questions. Empty = pick the provider's measured
+  // vision model (see VISION_MODELS in llm/index.js). Screenshots are routed
+  // here even when the configured text model cannot see images, because a blind
+  // model invents screen content instead of failing.
+  visionModel: '',
 };
 
 let cache = null;

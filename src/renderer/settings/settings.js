@@ -19,6 +19,8 @@ const MOD_SYMBOLS = [
 const shortcutsEl = document.getElementById('shortcuts');
 const providerEl = document.getElementById('provider');
 const modelEl = document.getElementById('model');
+const visionModelEl = document.getElementById('visionModel');
+const visionHintEl = document.getElementById('visionHint');
 const apiKeyEl = document.getElementById('apiKey');
 const keyHintEl = document.getElementById('keyHint');
 const sttModelEl = document.getElementById('sttModel');
@@ -27,7 +29,7 @@ const audioSourceEl = document.getElementById('audioSource');
 const autoAnswerEl = document.getElementById('autoAnswer');
 const statusEl = document.getElementById('status');
 
-let state = { hotkeys: {}, defaults: {}, models: {}, provider: 'opencode-go' };
+let state = { hotkeys: {}, defaults: {}, models: {}, provider: 'opencode-go', visionModel: '' };
 let recording = null; // action currently capturing keys
 
 function pretty(accelerator) {
@@ -151,6 +153,61 @@ function syncKeyField() {
   }
 }
 
+/** The model list for the active provider, shared by both pickers. */
+function providerModelList() {
+  const value = currentModel();
+  if (state.provider === 'deepseek') {
+    return [
+      { id: 'deepseek-chat', name: 'deepseek-chat' },
+      { id: 'deepseek-reasoner', name: 'deepseek-reasoner' },
+    ];
+  }
+  if (state.provider === 'commandcode-api') {
+    return state.commandCodeModels?.length ? state.commandCodeModels : [{ id: value, name: value || 'no models found' }];
+  }
+  if (state.answerModels?.length) return state.answerModels;
+  return [{ id: value, name: value || 'no models found' }];
+}
+
+// Kept in sync with VISION_MODELS in src/main/llm/index.js, for the label.
+const AUTO_VISION = {
+  'commandcode-api': 'google/gemini-3.8-flash',
+  'opencode-go': 'gemini-4-argon',
+};
+
+function syncVisionField() {
+  const cli = state.provider === 'opencode' || state.provider === 'commandcode';
+  visionModelEl.disabled = cli;
+
+  if (cli) {
+    visionModelEl.innerHTML = '<option value="">not available for CLI providers</option>';
+    visionHintEl.textContent =
+      'The CLI providers cannot receive images. Switch to opencode-go or commandcode API to use the screenshot button.';
+    return;
+  }
+
+  const list = providerModelList();
+  const auto = AUTO_VISION[state.provider];
+  const autoLabel = auto ? `Auto (${auto})` : 'Auto (none — pick a vision model)';
+  visionModelEl.innerHTML = [
+    `<option value="">${autoLabel}</option>`,
+    ...list.map((m) => `<option value="${m.id}">${m.name}</option>`),
+  ].join('');
+
+  const chosen = String(state.visionModel || '');
+  if (chosen && !list.some((m) => m.id === chosen)) {
+    const opt = document.createElement('option');
+    opt.value = chosen;
+    opt.textContent = `${chosen} (current)`;
+    visionModelEl.append(opt);
+  }
+  visionModelEl.value = chosen;
+
+  visionHintEl.textContent = auto
+    ? 'Screenshots are sent to this model. Auto uses the provider vision model; a text-only model would invent what is on screen.'
+    : 'This provider has no vision model. Screenshots will ask you to switch provider or set one here.';
+}
+
 function syncModelField() {
   const value = currentModel();
   modelEl.disabled = state.provider === 'opencode' || state.provider === 'commandcode';
@@ -161,19 +218,7 @@ function syncModelField() {
     return;
   }
 
-  let list;
-  if (state.provider === 'deepseek') {
-    list = [
-      { id: 'deepseek-chat', name: 'deepseek-chat' },
-      { id: 'deepseek-reasoner', name: 'deepseek-reasoner' },
-    ];
-  } else if (state.provider === 'commandcode-api') {
-    list = state.commandCodeModels?.length ? state.commandCodeModels : [{ id: value, name: value || 'no models found' }];
-  } else if (state.answerModels?.length) {
-    list = state.answerModels;
-  } else {
-    list = [{ id: value, name: value || 'no models found' }];
-  }
+  const list = providerModelList();
 
   modelEl.innerHTML = list.map((m) => `<option value="${m.id}">${m.name}</option>`).join('');
 
@@ -190,6 +235,7 @@ function syncModelField() {
 providerEl.addEventListener('change', () => {
   state.provider = providerEl.value;
   syncModelField();
+  syncVisionField();
   syncKeyField();
 });
 
@@ -214,6 +260,7 @@ document.getElementById('save').addEventListener('click', async () => {
     autoAnswer: autoAnswerEl.checked,
     provider: state.provider,
     models,
+    visionModel: visionModelEl.value,
     transcription: { engine: sttEngineEl.value, source: audioSourceEl.value, modelPath: sttModelEl.value },
   };
   if (apiKeyEl.value.trim()) payload.apiKey = apiKeyEl.value.trim();
@@ -229,6 +276,7 @@ document.getElementById('save').addEventListener('click', async () => {
   }
   if (result.models) state.models = { ...state.models, ...result.models };
   if (result.hasKey) state.hasKey = result.hasKey;
+  state.visionModel = visionModelEl.value;
   // A newly saved key can unlock the live model list.
   try {
     const refreshed = await window.tanaySettings.get();
@@ -238,6 +286,7 @@ document.getElementById('save').addEventListener('click', async () => {
     /* keep the list we already have */
   }
   syncModelField();
+  syncVisionField();
   syncKeyField();
 });
 
@@ -268,5 +317,6 @@ document.getElementById('save').addEventListener('click', async () => {
 
   renderShortcuts();
   syncModelField();
+  syncVisionField();
   syncKeyField();
 })();

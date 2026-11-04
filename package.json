@@ -10,7 +10,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "smoke": "electron . --smoke",
-    "test": "node test/llm.test.js && node test/detection.test.js && node test/tray-icon.test.js && node test/pick.test.js && node test/cloudyvoice-lifecycle.test.js",
+    "test": "node test/llm.test.js && node test/detection.test.js && node test/tray-icon.test.js && node test/pick.test.js && node test/overlay-render.test.js && node test/cloudyvoice-lifecycle.test.js",
     "make-icon": "node scripts/make-icon.js",
     "test:stt": "node test/cloudyvoice.test.js",
     "test:e2e": "node test/e2e.test.js",
@@ -31,6 +31,7 @@
       "src/**/*",
       "package.json"
     ],
+    "afterPack": "scripts/after-pack.js",
     "extraResources": [
       {
         "from": "native/CloudyEar/.build/release/CloudyEar",
@@ -43,6 +44,7 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "identity": null,
       "target": [
         "dmg"
       ],

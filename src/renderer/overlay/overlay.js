@@ -16,73 +16,10 @@ let placeholder = 'Waiting for a question…';
 let pendingSwap = false; // a superseding answer is streaming in; keep the old text visible
 let thinking = false; // model is working and has produced nothing yet
 
-// Markdown-lite: enough for the shapes the prompt asks for (bullets, bold,
-// headings, inline code, fenced blocks, rules) without pulling in a renderer.
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+// Markdown-lite rendering and C++ colouring live in render.js, which is
+// also required directly by the tests.
+const { render } = window.CloudyRender;
 
-function inline(s) {
-  return s
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
-}
-
-function render(md) {
-  const lines = md.split('\n');
-  const out = [];
-  let inCode = false;
-  let inList = false;
-  let lang = '';
-
-  const closeList = () => {
-    if (inList) {
-      out.push('</ul>');
-      inList = false;
-    }
-  };
-
-  for (const line of lines) {
-    if (line.startsWith('```')) {
-      if (!inCode) {
-        closeList();
-        lang = line.slice(3).trim();
-        out.push(lang === 'mermaid' ? '<pre><code class="mermaid">' : '<pre><code>');
-        inCode = true;
-      } else {
-        out.push('</code></pre>');
-        inCode = false;
-      }
-      continue;
-    }
-    if (inCode) {
-      out.push(escapeHtml(line));
-      continue;
-    }
-    if (/^\s*[-*]\s+/.test(line)) {
-      if (!inList) {
-        out.push('<ul>');
-        inList = true;
-      }
-      out.push(`<li>${inline(escapeHtml(line.replace(/^\s*[-*]\s+/, '')))}</li>`);
-      continue;
-    }
-    closeList();
-    if (/^#{1,6}\s/.test(line)) {
-      out.push(`<h3>${inline(escapeHtml(line.replace(/^#{1,6}\s+/, '')))}</h3>`);
-    } else if (/^\s*(\*\s*\*\s*\*|---)\s*$/.test(line)) {
-      out.push('<hr/>');
-    } else if (line.trim() === '') {
-      continue;
-    } else {
-      out.push(`<p>${inline(escapeHtml(line))}</p>`);
-    }
-  }
-  closeList();
-  if (inCode) out.push('</code></pre>');
-  return out.join('');
-}
 
 function paint() {
   if (raw) {

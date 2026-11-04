@@ -95,6 +95,13 @@ final class AudioPipeline: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     func start() {
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, error in
             if let error = error {
+                if isScreenRecordingDenied(error) {
+                    log(
+                        "error: screen recording permission denied - grant it in System Settings > "
+                            + "Privacy & Security > Screen & System Audio Recording, then relaunch CloudyAI"
+                    )
+                    exit(2)
+                }
                 log("cannot read shareable content: \(error.localizedDescription)")
                 exit(3)
             }
@@ -147,6 +154,13 @@ final class AudioPipeline: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
         self.stream = stream
         stream.startCapture { error in
             if let error = error {
+                if isScreenRecordingDenied(error) {
+                    log(
+                        "error: screen recording permission denied - grant it in System Settings > "
+                            + "Privacy & Security > Screen & System Audio Recording, then relaunch CloudyAI"
+                    )
+                    exit(2)
+                }
                 log("startCapture failed: \(error.localizedDescription)")
                 exit(5)
             }
@@ -356,24 +370,18 @@ final class AudioPipeline: NSObject, SCStreamOutput, SCStreamDelegate, @unchecke
     }
 }
 
-// MARK: - Permission preflight
+// MARK: - Permission
 
-func requireScreenRecordingPermission() {
-    if CGPreflightScreenCaptureAccess() { return }
-
-    log("screen recording permission is not granted; requesting it")
-    _ = CGRequestScreenCaptureAccess()
-    Thread.sleep(forTimeInterval: 1.0)
-
-    if CGPreflightScreenCaptureAccess() {
-        return
-    }
-
-    log(
-        "error: screen recording permission denied - grant it in System Settings > "
-            + "Privacy & Security > Screen & System Audio Recording, then relaunch CloudyAudio"
-    )
-    exit(2)
+/// True when ScreenCaptureKit refused because Screen & System Audio Recording
+/// is not granted. ScreenCaptureKit is the only permission entry point on
+/// purpose: asking through CGRequestScreenCaptureAccess as well makes macOS
+/// record a second, path-keyed row for the same app in System Settings, which
+/// shows up as a duplicate "CloudyAI" with a generic exec icon.
+func isScreenRecordingDenied(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.code == -3801 { return true } // SCStreamError.Code.userDeclined
+    let text = nsError.localizedDescription.lowercased()
+    return text.contains("declined") || text.contains("not authorized") || text.contains("denied")
 }
 
 // MARK: - main
@@ -383,8 +391,6 @@ func requireScreenRecordingPermission() {
 func runHelper() {
     // Never let a closed stdout pipe kill us silently.
     signal(SIGPIPE, SIG_IGN)
-
-    requireScreenRecordingPermission()
 
     let pipeline = AudioPipeline()
 

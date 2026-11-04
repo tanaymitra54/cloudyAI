@@ -8,6 +8,21 @@ const config = require('../config');
 
 // Single entry point for every backend. Cancels any in-flight request before
 // starting a new one, because a stale answer in a live call is worse than none.
+
+// Models measured to actually read a screenshot on each provider. A text-only
+// model still answers politely when handed an image — it just makes up what is
+// on screen, which is worse than an error.
+const VISION_MODELS = {
+  'commandcode-api': 'google/gemini-3.8-flash',
+  'opencode-go': 'gemini-4-argon',
+  // deepseek: text-only, no vision endpoint.
+};
+
+function resolveVisionModel(cfg) {
+  const explicit = String(cfg.visionModel || '').trim();
+  return explicit || VISION_MODELS[cfg.provider] || '';
+}
+
 class AnswerEngine {
   constructor({ onDelta, onDone, onError }) {
     this.onDelta = onDelta;
@@ -73,6 +88,17 @@ class AnswerEngine {
     this.cancel();
     this.seq = seq;
 
+    // A screenshot only means something to a model that can see. Text-only
+    // models answer from the prompt alone and invent screen content, so route
+    // screenshot turns to the vision model instead of the configured one.
+    const visionModel = images?.length ? resolveVisionModel(cfg) : '';
+    if (images?.length && !visionModel) {
+      this.onError?.(
+        `No vision model for ${cfg.provider}.\nScreenshots need a model that can see images. Set one in Settings → Screenshot model, or switch provider.`
+      );
+      return '';
+    }
+
     const main = new AbortController();
     this.controller = main;
 
@@ -101,9 +127,11 @@ class AnswerEngine {
 
     const hedge = cfg.hedge || {};
     const useHedge =
-      hedge.enabled && (cfg.provider === 'opencode-go' || cfg.provider === 'commandcode-api' || cfg.provider === 'deepseek');
+      !images?.length &&
+      hedge.enabled &&
+      (cfg.provider === 'opencode-go' || cfg.provider === 'commandcode-api' || cfg.provider === 'deepseek');
 
-    const jobs = [attempt(cfg.provider, null)];
+    const jobs = [attempt(cfg.provider, visionModel || null)];
     if (useHedge) {
       // Only fire the backup if the primary is slow to start, so the common case
       // costs one request rather than two.

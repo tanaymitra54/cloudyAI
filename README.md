@@ -51,9 +51,20 @@ To rebuild after changing code:
 
 ```bash
 npm run dist -- --dir                 # dist/mac-arm64/CloudyAI.app
-codesign --force --deep --sign - dist/mac-arm64/CloudyAI.app
 ditto dist/mac-arm64/CloudyAI.app /Applications/CloudyAI.app
 ```
+
+Packaging signs the bundle itself. `scripts/after-pack.js` runs
+`scripts/sign-app.sh` after pack: it signs the Electron frameworks, then the two
+Swift helpers (`cloudy-audio`, `cloudy-ear`), then the bundle as one identity
+with `com.cloudy.ai`. Set `SIGN_IDENTITY` (or install a Developer ID
+Application certificate in the keychain) to sign for real; with no certificate
+it falls back to ad-hoc, which still produces a valid, sealed bundle.
+
+That single identity matters for TCC. If the helpers stay unsigned, macOS
+records their screen-capture request against the raw executable path and System
+Settings shows a second, generic-icon **CloudyAI** row in Screen & System Audio
+Recording. After a rebuild the old row can be deleted with the **−** button.
 
 ## Settings
 
@@ -64,6 +75,17 @@ Changes apply immediately — no restart.
   At least one modifier is required so a plain letter can't hijack normal typing.
   If a combination is already owned by another app, it is reported by name
   instead of silently failing.
+- **Screenshot model** — the model that reads screenshots. Screenshot turns are
+  routed here instead of the text model, because a text-only model still answers
+  politely when handed an image, inventing what is on screen. *Auto* uses the
+  provider's vision model (`google/gemini-3.8-flash` on commandcode API,
+  `gemini-4-argon` on opencode-go). `deepseek` and the CLI providers have no
+  vision endpoint and say so instead of guessing.
+- **Code answers** — every coding problem is answered in **C++17**, one complete
+  `class Solution` in a fenced ```` ```cpp ```` block with the headers it needs, at
+  most three bullets before it. Other languages only if you type that request.
+  The overlay colours the block (keywords, types, functions, strings, numbers,
+  comments) and labels it **C++**.
 - **Engine / audio source** — Parakeet on the Neural Engine (default) or
   whisper.cpp; system audio (default) or the microphone. Switching restarts the
   recogniser live.
@@ -447,6 +469,9 @@ is ad-hoc signed, so macOS asks again after every rebuild.
 - **System audio requires Screen & System Audio Recording permission.** If it is
   denied, capture fails closed with an instruction — it never silently falls
   back to the microphone.
+- **A rebuild needs the permission granted again** (ad-hoc signing has no stable
+  team identity). Delete the old CloudyAI row with **−** if a stale, generic-icon
+  row is left behind, then grant the new prompt once.
 - **The microphone is off by default.** Enable Settings → Audio source →
   Microphone only if you want to transcribe people in the room.
 - The overlay is excluded from screenshots and live ScreenCaptureKit captures on
