@@ -5,7 +5,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 
 /**
- * CloudyEar — long-lived child process running NVIDIA Parakeet Unified EN 0.6B
+ * CloudyEar — long-lived child process running NVIDIA Parakeet TDT 0.6B v2
  * on the Neural Engine (FluidAudio / CoreML).
  *
  * The model loads once, then each utterance is decoded in well under a second.

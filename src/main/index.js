@@ -738,7 +738,6 @@ async function startListening() {
       voice = new CloudyVoice(cfg.cloudyvoice);
       voice.on('partial', (t) => {
         overlaySend('tanay:caption', t);
-        onPartialTranscript(t);
       });
       voice.on('final', onFinalTranscript);
       voice.on('error', (msg) => {

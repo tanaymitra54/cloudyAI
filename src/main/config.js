@@ -44,10 +44,10 @@ const DEFAULTS = {
     timeoutMs: 90000,
   },
   cloudyvoice: {
-    // 'parakeet': NVIDIA Parakeet Unified EN 0.6B through FluidAudio. Runs on
-    // the Neural Engine, keeps the model in memory, and decodes a 6 s question
-    // in ~170 ms (vs ~520 ms for whisper base.en, which also reloads the model
-    // every time). First use downloads ~600 MB once.
+    // 'parakeet': NVIDIA Parakeet TDT 0.6B v2 through FluidAudio. English only,
+    // highest recall. Runs on the Neural Engine, keeps the model in memory, and
+    // decodes a 3.4 s question in ~110 ms (vs ~520 ms for whisper base.en, which
+    // also reloads the model every time). First use downloads ~464 MB once.
     // 'whisper': the previous whisper.cpp CLI path.
     engine: 'parakeet',
     // 'system': capture the other participant through the system audio helper

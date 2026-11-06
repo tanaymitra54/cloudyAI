@@ -1,6 +1,6 @@
 // CloudyEar — a long-lived local ASR helper for CloudyAI.
 //
-// NVIDIA Parakeet Unified EN 0.6B (CoreML, Neural Engine) via FluidAudio.
+// NVIDIA Parakeet TDT 0.6B v2 (CoreML, Neural Engine) via FluidAudio.
 // The process loads the model once and then answers one JSON request per line:
 //
 //   in : {"id": 1, "path": "/tmp/utterance.wav"}
@@ -49,30 +49,40 @@ struct CloudyEar {
         AppLogger.mirrorsToConsole = false
 
         let oneShot = argument("--transcribe")
-        let modelsDir = argument("--models-dir").map { URL(fileURLWithPath: $0) }
 
         emit(["event": "loading"])
-        let manager = UnifiedAsrManager(encoderPrecision: .int8)
 
+        // FluidAudio caches one folder per repo under <FluidAudio>/Models.
+        let modelsBase =
+            argument("--models-dir").map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("FluidAudio", isDirectory: true)
+                .appendingPathComponent("Models", isDirectory: true)
+        let repoDir = modelsBase.appendingPathComponent("parakeet-tdt-0.6b-v2", isDirectory: true)
+
+        let manager = AsrManager()
         do {
-            try await manager.loadModels(to: modelsDir, progressHandler: { progress in
-                let percent = Int((progress.fractionCompleted * 100).rounded())
-                emit(["event": "progress", "percent": percent])
-            })
+            let models = try await AsrModels.downloadAndLoad(
+                to: repoDir,
+                version: .v2,
+                progressHandler: { progress in
+                    emit(["event": "progress", "percent": Int((progress.fractionCompleted * 100).rounded())])
+                })
+            try await manager.loadModels(models)
         } catch {
             emit(["event": "error", "error": "\(error)"])
             exit(1)
         }
         emit(["event": "ready"])
 
-        let converter = AudioConverter()
-
+        // v2 is stateless per utterance: every request gets a fresh decoder state.
         func transcribe(_ path: String) async throws -> (text: String, ms: Int, audioMs: Int) {
-            let samples = try converter.resampleAudioFile(URL(fileURLWithPath: path))
+            var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
             let started = Date()
-            let text = try await manager.transcribe(samples)
+            let result = try await manager.transcribe(
+                URL(fileURLWithPath: path), decoderState: &state)
             let ms = Int(Date().timeIntervalSince(started) * 1000)
-            return (text, ms, samples.count / 16)
+            return (result.text, ms, Int((result.duration * 1000).rounded()))
         }
 
         if let oneShot {

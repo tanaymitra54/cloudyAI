@@ -165,13 +165,17 @@ system audio ── ScreenCaptureKit helper (16 kHz mono) ──► CloudyVoice 
 
 Two local engines, switchable in Settings → Transcription:
 
-| | Parakeet Unified 0.6B (default) | whisper.cpp |
+| | Parakeet TDT 0.6B v2 (default) | whisper.cpp |
 |---|---|---|
 | Runtime | FluidAudio + CoreML on the Neural Engine | whisper.cpp on Metal |
 | Model load | once at startup, stays in memory | ~0.33 s on every utterance |
-| Decode a 6 s question | ~0.17–0.25 s | ~0.52 s |
-| Disk | ~596 MB, downloaded on first use | 141 MB (base.en) |
+| Decode a 3.4 s question | ~0.11 s | ~0.52 s |
+| Disk | 452 MB, downloaded on first use | 141 MB (base.en) |
 | Punctuation + capitals | yes | no |
+
+Parakeet TDT v2 is the English-only checkpoint: NVIDIA's highest-recall 0.6B
+model. It is the same model candyAI (the `handy` app) runs, but in CoreML rather
+than GGUF, because FluidAudio only reads CoreML.
 
 `npm run build:ear` compiles the helper (`native/CloudyEar`, a Swift package).
 The first launch downloads the CoreML model to
@@ -183,9 +187,9 @@ If the helper is missing, CloudyAI falls back to whisper.cpp and says so instead
 of going silent. Force the fallback any time in Settings → Transcription →
 Engine.
 
-Measured on this M1 / 8 GB with `node test/cloudyvoice.test.js` on the same 6.2 s
-clip: whisper final at 2.77 s, Parakeet final at 1.65 s. The gap is the model
-load whisper pays on every decode, plus the decode itself.
+Measured on this M1 / 8 GB: a 3.4 s question decodes in ~110 ms with Parakeet TDT
+v2 warm, against ~520 ms for whisper.cpp base.en, which also reloads its model on
+every utterance.
 
 ## Configuration
 
@@ -525,7 +529,7 @@ src/main/windows.js          overlay + capture windows, tray
 src/main/pick.js             which utterance ⌘J answers (tested in isolation)
 src/main/stt/CloudyVoice.js  VAD + utterance segmentation
 src/main/stt/CloudyEar.js    long-lived Parakeet helper client
-native/CloudyEar/            Swift package: Parakeet Unified 0.6B via FluidAudio
+native/CloudyEar/            Swift package: Parakeet TDT 0.6B v2 via FluidAudio
 src/main/audio/CloudyAudio.js  system-audio helper client (PCM frames)
 native/CloudyAudio/          Swift package: ScreenCaptureKit system audio only
 scripts/build-ear.sh         builds the Parakeet helper
