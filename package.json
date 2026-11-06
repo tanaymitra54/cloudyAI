@@ -29,6 +29,7 @@
     "productName": "CloudyAI",
     "files": [
       "src/**/*",
+      "node_modules/**/*",
       "package.json"
     ],
     "afterPack": "scripts/after-pack.js",
@@ -54,5 +55,8 @@
         "LSUIElement": true
       }
     }
+  },
+  "dependencies": {
+    "pdf-parse": "^1.1.1"
   }
 }

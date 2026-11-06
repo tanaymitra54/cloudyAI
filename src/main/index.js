@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { app, ipcMain, globalShortcut, systemPreferences, shell, desktopCapturer, screen } = require('electron');
+const { app, ipcMain, globalShortcut, systemPreferences, shell, desktopCapturer, screen, dialog } = require('electron');
 
 // ---------------------------------------------------------------- env loading
 // No dotenv dependency: read KEY=VALUE lines from .env next to package.json.
@@ -34,6 +34,7 @@ const { CloudyVoice } = require('./stt/CloudyVoice');
 const { CloudyAudio } = require('./audio/CloudyAudio');
 const { AnswerEngine } = require('./llm');
 const { pickQuestion, shouldSkipAnswer } = require('./pick');
+const docs = require('./docs');
 
 // ------------------------------------------------------------- resolve binaries
 function resolveBin(bin, knownDirs = ['/opt/homebrew/bin', '/usr/local/bin']) {
@@ -89,6 +90,7 @@ let listening = false;
 let turns = [];
 let askTimer = null;
 let resumeText = '';
+let jobDescriptionText = '';
 let lastAnswered = { text: '', at: 0, utteranceId: null };
 let speculated = false; // at most one speculative answer per utterance
 let starting = false; // guards against overlapping getUserMedia requests
@@ -176,6 +178,7 @@ function watchConfig() {
         try {
           config.reload();
           applyHotkeys();
+          loadContextDocs({ quiet: true }).catch(() => {});
           overlaySend('tanay:meta', metaLine());
           windows.refreshTray(trayState());
         } catch (err) {
@@ -188,18 +191,28 @@ function watchConfig() {
   }
 }
 
-function loadResume() {
+/**
+ * Read the session documents once and keep the text in memory. A CV or job
+ * description is large, so this is async and re-run only when settings change.
+ */
+async function loadContextDocs({ quiet = false } = {}) {
   const cfg = config.load();
-  if (!cfg.resumePath) {
-    resumeText = '';
-    return;
-  }
+  const problems = [];
   try {
-    resumeText = fs.readFileSync(cfg.resumePath, 'utf8');
+    resumeText = await docs.loadText(cfg.resumePath, 'CV');
   } catch (err) {
     resumeText = '';
-    overlaySend('tanay:error', `Could not read resume: ${err.message}`);
+    problems.push(err.message);
   }
+  try {
+    const pasted = String(cfg.jobDescription || '').trim();
+    jobDescriptionText = pasted || (await docs.loadText(cfg.jobDescriptionPath, 'job description'));
+  } catch (err) {
+    jobDescriptionText = '';
+    problems.push(err.message);
+  }
+  if (!quiet) for (const message of problems) overlaySend('tanay:error', message);
+  return problems;
 }
 
 // ---------------------------------------------------------------- answer flow
@@ -211,11 +224,15 @@ function ask(triggerText, { speculative = false, images = null, utteranceId = nu
   lastAnswered = { text: transcript, at: Date.now(), utteranceId };
   overlaySend('tanay:answer-start');
   engine.ask({
-    system: prompts.systemPrompt(cfg.profile, { screenshot: Boolean(images?.length) }),
+    system: prompts.systemPrompt(cfg.profile, {
+      screenshot: Boolean(images?.length),
+      sessionPrompt: cfg.sessionPrompt,
+    }),
     user: prompts.buildUserPrompt({
       transcript,
       context: turns.slice(-1 - cfg.contextTurns, -1).map((t) => t.text),
       resume: resumeText,
+      jobDescription: jobDescriptionText,
       profile: cfg.profile,
       screenshot: Boolean(images?.length),
     }),
@@ -227,21 +244,35 @@ function ask(triggerText, { speculative = false, images = null, utteranceId = nu
  * A typed question is its own turn: there is no speech to interpret, so the
  * text goes in the transcript slot and the speech context is left out.
  */
+// What the model is asked when the user sends screenshots with an empty box.
+const SCREENSHOT_DEFAULT_PROMPT =
+  'Answer based on what is on this screen. If there is a question or task, answer it; if not, say what is on the screen and what I can do next.';
+
+// Screenshots are held in the renderer until Send is pressed, so a stray
+// capture costs nothing. Cap the batch so one request stays small.
+const MAX_SCREENSHOTS = 5;
+
 function askTyped(text, { images = null } = {}) {
-  const typed = String(text || '').trim();
-  if (!typed) return;
+  let typed = String(text || '').trim();
+  const hasImages = Array.isArray(images) && images.length > 0;
+  if (!typed && !hasImages) return;
+  if (!typed) typed = SCREENSHOT_DEFAULT_PROMPT;
 
   const cfg = config.load();
   lastAnswered = { text: typed, at: Date.now(), utteranceId: null };
   overlaySend('tanay:answer-start');
   engine.ask({
-    system: prompts.systemPrompt(cfg.profile, { screenshot: Boolean(images?.length) }),
+    system: prompts.systemPrompt(cfg.profile, {
+      screenshot: hasImages,
+      sessionPrompt: cfg.sessionPrompt,
+    }),
     user: prompts.buildUserPrompt({
       transcript: typed,
       context: [],
       resume: resumeText,
+      jobDescription: jobDescriptionText,
       profile: cfg.profile,
-      screenshot: Boolean(images?.length),
+      screenshot: hasImages,
     }),
     images,
   });
@@ -278,12 +309,18 @@ async function captureScreen() {
   return source.thumbnail.toDataURL();
 }
 
-async function answerFromScreenshot(promptText) {
+/**
+ * Capture the display the pointer is on and hand the image back to the
+ * overlay. Nothing is sent to the model here — the user collects one or more
+ * shots, previews them, and presses Send.
+ * The overlay sets content protection, so it never appears in the image.
+ */
+async function captureScreenshot() {
   overlaySend('tanay:status', 'capturing');
   try {
     const dataUrl = await captureScreen();
 
-    // Debug aid: CLOUDY_SHOT_DUMP=/tmp/shot.png keeps the exact image sent.
+    // Debug aid: CLOUDY_SHOT_DUMP=/tmp/shot.png keeps the exact image captured.
     if (process.env.CLOUDY_SHOT_DUMP) {
       try {
         const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -294,15 +331,11 @@ async function answerFromScreenshot(promptText) {
       }
     }
 
-    const typed = String(promptText || '').trim();
-    askTyped(typed || 'Answer based on what is on this screen. If there is a question or task, answer it; if not, say what is on the screen and what I can do next.', {
-      images: [dataUrl],
-    });
-    return true;
+    return { ok: true, dataUrl };
   } catch (err) {
     overlaySend('tanay:error', err.message);
     overlaySend('tanay:status', 'error');
-    return false;
+    return { ok: false, error: err.message };
   }
 }
 
@@ -476,8 +509,13 @@ function registerIpcHandlers() {
   ipcMain.on('tanay:clear', () => clearSession());
 
   // Typed questions and screenshot questions come from the overlay composer.
-  ipcMain.on('tanay:ask-text', (_event, text) => askTyped(text));
-  ipcMain.handle('tanay:shot', (_event, text) => answerFromScreenshot(text));
+  // Images are collected in the overlay and only arrive here on Send.
+  ipcMain.on('tanay:ask-text', (_event, text, images) =>
+    askTyped(text, {
+      images: Array.isArray(images) ? images.filter((img) => typeof img === 'string').slice(0, MAX_SCREENSHOTS) : null,
+    })
+  );
+  ipcMain.handle('tanay:capture', () => captureScreenshot());
 
   ipcMain.on('tanay:overlay-hide', () => windows.getOverlay()?.hide());
   ipcMain.on('tanay:settings', () => windows.createSettings());
@@ -500,6 +538,14 @@ function registerIpcHandlers() {
       autoAnswer: cfg.autoAnswer,
       provider: cfg.provider,
       visionModel: cfg.visionModel || '',
+      session: {
+        prompt: cfg.sessionPrompt || '',
+        jobDescriptionText: cfg.jobDescription || '',
+        jobDescriptionFile: cfg.jobDescriptionPath ? path.basename(cfg.jobDescriptionPath) : '',
+        jobDescriptionChars: jobDescriptionText.length,
+        resumeFile: cfg.resumePath ? path.basename(cfg.resumePath) : '',
+        resumeChars: resumeText.length,
+      },
       models: {
         opencodeGo: cfg.opencodeGo.model,
         commandCodeApi: cfg.commandCodeApi.model,
@@ -531,12 +577,60 @@ function registerIpcHandlers() {
 
   ipcMain.handle('settings:reset-shortcuts', () => config.DEFAULTS.hotkeys);
 
-  ipcMain.handle('settings:save', (_event, payload = {}) => {
+  // Upload a CV / job description: picked, copied into <userData>/context,
+  // text extracted here, and the config updated in one step.
+  ipcMain.handle('settings:pick-document', async (_event, kind) => {
+    const isResume = kind === 'resume';
+    const picked = await dialog.showOpenDialog(windows.getSettings(), {
+      title: isResume ? 'Choose your CV' : 'Choose the job description',
+      buttonLabel: 'Use this file',
+      properties: ['openFile'],
+      filters: [{ name: 'Documents', extensions: ['pdf', 'txt', 'md', 'markdown'] }],
+    });
+    if (picked.canceled || !picked.filePaths.length) return { canceled: true };
+
+    const source = picked.filePaths[0];
+    try {
+      const info = await docs.importDocument(isResume ? 'resume' : 'job-description', source);
+      if (isResume) {
+        config.save({ resumePath: info.path });
+      } else {
+        // A file replaces pasted text; only one source of truth.
+        config.save({ jobDescriptionPath: info.path, jobDescription: '' });
+      }
+      await loadContextDocs({ quiet: true });
+      pushMeta();
+      return { ok: true, ...info };
+    } catch (err) {
+      return { canceled: false, ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('settings:clear-document', async (_event, kind) => {
+    const isResume = kind === 'resume';
+    docs.removeDocument(isResume ? 'resume' : 'job-description');
+    config.save(isResume ? { resumePath: '' } : { jobDescriptionPath: '', jobDescription: '' });
+    await loadContextDocs({ quiet: true });
+    pushMeta();
+    return { ok: true };
+  });
+
+  ipcMain.handle('settings:save', async (_event, payload = {}) => {
     const patch = {};
     if (payload.hotkeys) patch.hotkeys = payload.hotkeys;
     if (typeof payload.autoAnswer === 'boolean') patch.autoAnswer = payload.autoAnswer;
     if (payload.provider) patch.provider = payload.provider;
     if (typeof payload.visionModel === 'string') patch.visionModel = payload.visionModel.trim();
+    if (typeof payload.sessionPrompt === 'string') {
+      patch.sessionPrompt = payload.sessionPrompt.trim().slice(0, 4000);
+    }
+    // Pasted job description. Skipped while an uploaded file is attached, so
+    // Save cannot silently erase the file by sending an empty box.
+    if (typeof payload.jobDescriptionText === 'string' && !payload.keepJobDescriptionFile) {
+      const text = payload.jobDescriptionText.trim().slice(0, docs.MAX_CHARS);
+      patch.jobDescription = text;
+      if (text) patch.jobDescriptionPath = '';
+    }
 
     if (payload.models) {
       patch.opencodeGo = {};
@@ -568,6 +662,8 @@ function registerIpcHandlers() {
 
     config.save(patch);
     const result = applyHotkeys();
+    // Keep the in-memory CV / job description in step with the saved file.
+    await loadContextDocs({ quiet: true });
 
     // A model or engine change has to reach the running recogniser, not just the file.
     if (voice) {
@@ -832,7 +928,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    loadResume();
+    await loadContextDocs({ quiet: true });
 
     engine = new AnswerEngine({
       onDelta: (d) => overlaySend('tanay:answer-delta', d),
@@ -1174,9 +1270,9 @@ if (!gotLock) {
       })();
     }
 
-    // `electron . --composer-test` checks the typed-prompt box and the
-    // screenshot button: the elements exist, Enter sends the text, and the
-    // screenshot path hands an image to the engine.
+    // `electron . --composer-test` checks the composer: Enter sends typed text,
+    // the camera adds a preview instead of sending, two captures collect into a
+    // batch, and Send ships every image with the prompt.
     if (process.argv.includes('--composer-test')) {
       (async () => {
         const overlay = windows.getOverlay();
@@ -1189,14 +1285,14 @@ if (!gotLock) {
           prompt: Boolean(document.getElementById('prompt')),
           send: Boolean(document.getElementById('send')),
           shot: Boolean(document.getElementById('shot')),
-          bridge: typeof window.tanay.askText === 'function' && typeof window.tanay.screenshot === 'function',
+          shots: Boolean(document.getElementById('shots')),
+          bridge: typeof window.tanay.askText === 'function' && typeof window.tanay.capture === 'function',
           placeholder: document.getElementById('prompt') ? document.getElementById('prompt').placeholder : ''
         })`);
         console.log('[composer-test] dom', JSON.stringify(dom));
 
-        // Swap the answer call for a recorder: the typed part checks the wiring,
-        // not the provider. CLOUDY_LIVE_SHOT=1 restores the real call for the
-        // screenshot so the image path is proven end to end.
+        // Swap the answer call for a recorder: the wiring is what matters here,
+        // not the provider. CLOUDY_LIVE_SHOT=1 restores the real call.
         const live = process.env.CLOUDY_LIVE_SHOT === '1';
         const realAsk = engine.ask;
         let captured = null;
@@ -1222,10 +1318,35 @@ if (!gotLock) {
           })
         );
 
+        // Capture twice: the camera must only queue previews, never send.
         captured = null;
         if (live) engine.ask = realAsk;
         await overlay.webContents.executeJavaScript(`document.getElementById('shot').click()`);
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 1200));
+        await overlay.webContents.executeJavaScript(`document.getElementById('shot').click()`);
+        await new Promise((r) => setTimeout(r, 1200));
+
+        const pending = await overlay.webContents.executeJavaScript(`({
+          previews: document.querySelectorAll('#shots .shot').length,
+          stripHidden: document.getElementById('shots').hidden,
+          status: document.getElementById('status').textContent,
+          answer: document.getElementById('answer').textContent.slice(0, 120),
+          sendEnabled: !document.getElementById('send').disabled
+        })`);
+        console.log(
+          '[composer-test] queued',
+          JSON.stringify({
+            live,
+            screenAccess: process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('screen') : 'n/a',
+            sentBeforeSend: Boolean(captured && captured.images && captured.images.length),
+            ...pending,
+          })
+        );
+
+        // Press Send with an empty box: the default screenshot prompt goes out.
+        if (live) engine.ask = realAsk;
+        await overlay.webContents.executeJavaScript(`document.getElementById('send').click()`);
+        await new Promise((r) => setTimeout(r, 400));
 
         if (live) {
           const deadline = Date.now() + 25000;
@@ -1238,22 +1359,61 @@ if (!gotLock) {
           }
         }
 
-        const shotState = await overlay.webContents.executeJavaScript(`({
-          status: document.getElementById('status').textContent,
-          answer: document.getElementById('answer').textContent.slice(0, 120)
+        const sentState = await overlay.webContents.executeJavaScript(`({
+          previews: document.querySelectorAll('#shots .shot').length,
+          stripHidden: document.getElementById('shots').hidden,
+          status: document.getElementById('status').textContent
         })`);
         console.log(
-          '[composer-test] shot',
+          '[composer-test] sent',
           JSON.stringify({
             live,
-            screenAccess: process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('screen') : 'n/a',
-            attached: Boolean(captured && captured.images && captured.images.length),
+            images: captured && captured.images ? captured.images.length : 0,
             png: Boolean(captured && captured.images && captured.images[0].startsWith('data:image/png')),
             defaultPrompt: Boolean(
               captured && captured.user.includes('Answer based on what is on this screen.')
             ),
             screenshotTag: Boolean(captured && captured.user.includes('<screenshot>')),
-            ...shotState,
+            ...sentState,
+          })
+        );
+
+        app.quit();
+      })();
+    }
+
+    // `electron . --settings-test` checks the session-context controls exist and
+    // the document bridge is wired, without opening a file dialog.
+    if (process.argv.includes('--settings-test')) {
+      (async () => {
+        const win = windows.createSettings();
+        if (win.webContents.isLoading()) {
+          await new Promise((resolve) => win.webContents.once('did-finish-load', resolve));
+        }
+        await new Promise((r) => setTimeout(r, 300));
+
+        const dom = await win.webContents.executeJavaScript(`({
+          sessionPrompt: Boolean(document.getElementById('sessionPrompt')),
+          jdText: Boolean(document.getElementById('jdText')),
+          resumePick: Boolean(document.getElementById('resumePick')),
+          jdPick: Boolean(document.getElementById('jdPick')),
+          bridge: typeof window.tanaySettings.pickDocument === 'function'
+            && typeof window.tanaySettings.clearDocument === 'function',
+          promptValue: document.getElementById('sessionPrompt') ? document.getElementById('sessionPrompt').value : '',
+          jdHidden: document.getElementById('jdText') ? document.getElementById('jdText').hidden : null
+        })`);
+        console.log('[settings-test] dom', JSON.stringify(dom));
+
+        const cfg = config.load();
+        console.log(
+          '[settings-test] context',
+          JSON.stringify({
+            sessionPromptChars: (cfg.sessionPrompt || '').length,
+            resume: cfg.resumePath ? path.basename(cfg.resumePath) : '',
+            jobDescriptionFile: cfg.jobDescriptionPath ? path.basename(cfg.jobDescriptionPath) : '',
+            jobDescriptionPastedChars: (cfg.jobDescription || '').length,
+            resumeTextChars: resumeText.length,
+            jobDescriptionTextChars: jobDescriptionText.length,
           })
         );
 

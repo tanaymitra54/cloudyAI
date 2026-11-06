@@ -80,6 +80,11 @@ const DEFAULTS = {
   },
   profile: 'interview',
   resumePath: '',
+  // Session-only context: a free-form instruction block appended to the system
+  // prompt, plus a job description either pasted here or read from a file.
+  sessionPrompt: '',
+  jobDescription: '',
+  jobDescriptionPath: '',
   contextTurns: 3,
   // Manual by default: the app transcribes continuously but only answers when
   // you press the hotkey. Turn this on to have it answer questions by itself.

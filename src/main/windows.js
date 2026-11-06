@@ -92,10 +92,11 @@ function createSettings() {
   }
 
   settingsWin = new BrowserWindow({
-    width: 540,
-    height: 660,
+    width: 560,
+    height: 780,
+    minHeight: 400,
     title: 'CloudyAI settings',
-    resizable: false,
+    resizable: true,
     minimizable: true,
     maximizable: false,
     fullscreenable: false,

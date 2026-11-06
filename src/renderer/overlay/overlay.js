@@ -9,12 +9,20 @@ const metaEl = document.getElementById('meta');
 const promptEl = document.getElementById('prompt');
 const sendBtn = document.getElementById('send');
 const shotBtn = document.getElementById('shot');
+const shotsEl = document.getElementById('shots');
+const lightboxEl = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightboxImg');
 
 let raw = '';
 let listening = false;
 let placeholder = 'Waiting for a question…';
 let pendingSwap = false; // a superseding answer is streaming in; keep the old text visible
 let thinking = false; // model is working and has produced nothing yet
+
+// Screenshots stay here until Send. The camera only queues them, so a capture
+// can be reviewed (or removed) before anything reaches the model.
+const MAX_SHOTS = 5;
+let shots = [];
 
 // Markdown-lite rendering and C++ colouring live in render.js, which is
 // also required directly by the tests.
@@ -40,22 +48,94 @@ function setStatus(text, cls) {
 // ------------------------------------------------------------------ composer
 // The textarea grows with its content up to a cap, so a one-line question does
 // not take panel space away from the answer.
+function updateSendState() {
+  // Send stays live for a screenshot-only turn: no text is needed when an
+  // image is attached.
+  sendBtn.disabled = !promptEl.value.trim() && shots.length === 0;
+}
+
 function growPrompt() {
   promptEl.style.height = 'auto';
   promptEl.style.height = `${Math.min(promptEl.scrollHeight, 96)}px`;
-  sendBtn.disabled = !promptEl.value.trim();
+  updateSendState();
 }
 
-function takePrompt() {
-  const text = promptEl.value.trim();
+function clearShots() {
+  shots = [];
+  closeLightbox();
+  renderShots();
+}
+
+// --------------------------------------------------------------- previews
+// Each captured image gets a thumbnail. Click the thumbnail for a full-size
+// look, click × to drop it. Nothing leaves the panel until Send.
+function renderShots() {
+  shotsEl.hidden = shots.length === 0;
+  shotsEl.textContent = '';
+  shots.forEach((shot, index) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'shot';
+
+    const open = document.createElement('button');
+    open.className = 'shot-open';
+    open.title = `Preview screenshot ${index + 1}`;
+    const img = document.createElement('img');
+    img.src = shot.dataUrl;
+    img.alt = `Screenshot ${index + 1}`;
+    open.appendChild(img);
+    open.addEventListener('click', () => openLightbox(shot.id));
+
+    const remove = document.createElement('button');
+    remove.className = 'shot-x';
+    remove.title = 'Remove screenshot';
+    remove.textContent = '×';
+    remove.addEventListener('click', (event) => {
+      event.stopPropagation();
+      shots = shots.filter((item) => item.id !== shot.id);
+      if (lightboxShotId === shot.id) closeLightbox();
+      renderShots();
+    });
+
+    wrap.append(open, remove);
+    shotsEl.appendChild(wrap);
+  });
+  updateSendState();
+}
+
+let lightboxShotId = null;
+
+function openLightbox(id) {
+  const shot = shots.find((item) => item.id === id);
+  if (!shot) return;
+  lightboxShotId = id;
+  lightboxImg.src = shot.dataUrl;
+  lightboxEl.hidden = false;
+}
+
+function closeLightbox() {
+  lightboxShotId = null;
+  lightboxEl.hidden = true;
+  lightboxImg.removeAttribute('src');
+}
+
+lightboxEl.addEventListener('click', (event) => {
+  if (event.target === lightboxEl || event.target.id === 'lightboxClose') closeLightbox();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !lightboxEl.hidden) {
+    event.preventDefault();
+    closeLightbox();
+  }
+});
+
+function sendPrompt() {
+  const typed = promptEl.value.trim();
+  const images = shots.map((shot) => shot.dataUrl);
+  if (!typed && !images.length) return;
   promptEl.value = '';
   growPrompt();
-  return text;
-}
-
-function sendTyped() {
-  const text = takePrompt();
-  if (text) window.tanay.askText(text);
+  clearShots();
+  window.tanay.askText(typed, images);
 }
 
 promptEl.addEventListener('input', growPrompt);
@@ -63,21 +143,37 @@ promptEl.addEventListener('keydown', (event) => {
   // Enter sends; Shift+Enter keeps the newline. IME composition must not send.
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    sendTyped();
+    sendPrompt();
   }
 });
-sendBtn.addEventListener('click', sendTyped);
+sendBtn.addEventListener('click', sendPrompt);
+
+let capturing = false;
 shotBtn.addEventListener('click', async () => {
-  shotBtn.disabled = true;
-  const typed = promptEl.value;
-  // The box is only cleared once the capture really happened, so a permission
-  // error does not swallow a question the user just wrote.
-  const captured = await window.tanay.screenshot(typed.trim());
-  if (captured && promptEl.value === typed) {
-    promptEl.value = '';
-    growPrompt();
+  if (capturing) return;
+  if (shots.length >= MAX_SHOTS) {
+    setStatus(`only ${MAX_SHOTS} screenshots per question`, 'error');
+    return;
   }
-  shotBtn.disabled = false;
+  capturing = true;
+  shotBtn.disabled = true;
+  try {
+    const result = await window.tanay.capture();
+    if (result && result.ok) {
+      shots.push({
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        dataUrl: result.dataUrl,
+      });
+      renderShots();
+      // Take the status line back from "capturing screen…".
+      setStatus(listening ? 'listening' : 'idle', listening ? 'live' : '');
+    } else {
+      setStatus('error', 'error'); // onError already spelled out the fix
+    }
+  } finally {
+    capturing = false;
+    shotBtn.disabled = false;
+  }
 });
 
 window.tanay.onCaption((text) => {
@@ -200,6 +296,7 @@ document.getElementById('clear').addEventListener('click', () => {
   transcriptParts = [];
   promptEl.value = '';
   growPrompt();
+  clearShots();
   renderTranscript();
   paint();
   window.tanay.clear();

@@ -27,10 +27,92 @@ const sttModelEl = document.getElementById('sttModel');
 const sttEngineEl = document.getElementById('sttEngine');
 const audioSourceEl = document.getElementById('audioSource');
 const autoAnswerEl = document.getElementById('autoAnswer');
+const sessionPromptEl = document.getElementById('sessionPrompt');
+const jdTextEl = document.getElementById('jdText');
+const resumeFileEl = document.getElementById('resumeFile');
+const resumeHintEl = document.getElementById('resumeHint');
+const resumePickEl = document.getElementById('resumePick');
+const resumeClearEl = document.getElementById('resumeClear');
+const jdFileEl = document.getElementById('jdFile');
+const jdHintEl = document.getElementById('jdHint');
+const jdPickEl = document.getElementById('jdPick');
+const jdClearEl = document.getElementById('jdClear');
 const statusEl = document.getElementById('status');
 
-let state = { hotkeys: {}, defaults: {}, models: {}, provider: 'opencode-go', visionModel: '' };
+let state = { hotkeys: {}, defaults: {}, models: {}, provider: 'opencode-go', visionModel: '', session: {} };
 let recording = null; // action currently capturing keys
+
+/**
+ * Show which CV / job description is loaded. A file is the source of truth, so
+ * the pasted box is hidden while one is attached — otherwise it is not obvious
+ * which text the model actually receives.
+ */
+function renderDocuments() {
+  const session = state.session || {};
+
+  const resumeName = session.resumeFile || '';
+  resumeFileEl.textContent = resumeName || 'No file';
+  resumeFileEl.className = `doc-file${resumeName ? '' : ' empty'}`;
+  resumeClearEl.hidden = !resumeName;
+  resumeHintEl.textContent = resumeName
+    ? `Answers use this CV — ${session.resumeChars || 0} characters of text read.`
+    : 'The model answers using your real experience. PDF, .txt or .md.';
+
+  const jdName = session.jobDescriptionFile || '';
+  jdFileEl.textContent = jdName || 'No file';
+  jdFileEl.className = `doc-file${jdName ? '' : ' empty'}`;
+  jdClearEl.hidden = !jdName;
+
+  // A file and pasted text are alternatives; the file wins and the box is hidden.
+  jdTextEl.hidden = Boolean(jdName);
+  jdTextEl.value = jdName ? '' : session.jobDescriptionText || '';
+  jdHintEl.textContent = jdName
+    ? `Answers target this posting — ${session.jobDescriptionChars || 0} characters of text read.`
+    : 'Answers are angled toward this role. Paste the posting, or upload a PDF.';
+}
+
+/** Uploads apply immediately (no Save needed) and re-render the document rows. */
+async function pickDocument(kind) {
+  statusEl.className = 'status';
+  statusEl.textContent = 'Reading file…';
+  const result = await window.tanaySettings.pickDocument(kind);
+  if (result.canceled) {
+    statusEl.textContent = '';
+    return;
+  }
+  if (!result.ok) {
+    statusEl.className = 'status error';
+    statusEl.textContent = result.error;
+    return;
+  }
+  state.session = {
+    ...(state.session || {}),
+    ...(kind === 'resume'
+      ? { resumeFile: result.name, resumeChars: result.chars }
+      : { jobDescriptionFile: result.name, jobDescriptionChars: result.chars, jobDescriptionText: '' }),
+  };
+  renderDocuments();
+  statusEl.className = 'status';
+  statusEl.textContent = `${kind === 'resume' ? 'CV' : 'Job description'} loaded — ${result.chars} characters.`;
+}
+
+async function clearDocument(kind) {
+  await window.tanaySettings.clearDocument(kind);
+  state.session = {
+    ...(state.session || {}),
+    ...(kind === 'resume'
+      ? { resumeFile: '', resumeChars: 0 }
+      : { jobDescriptionFile: '', jobDescriptionChars: 0, jobDescriptionText: '' }),
+  };
+  renderDocuments();
+  statusEl.className = 'status';
+  statusEl.textContent = `${kind === 'resume' ? 'CV' : 'Job description'} removed.`;
+}
+
+resumePickEl.addEventListener('click', () => pickDocument('resume'));
+resumeClearEl.addEventListener('click', () => clearDocument('resume'));
+jdPickEl.addEventListener('click', () => pickDocument('job-description'));
+jdClearEl.addEventListener('click', () => clearDocument('job-description'));
 
 function pretty(accelerator) {
   if (!accelerator) return '';
@@ -262,6 +344,10 @@ document.getElementById('save').addEventListener('click', async () => {
     models,
     visionModel: visionModelEl.value,
     transcription: { engine: sttEngineEl.value, source: audioSourceEl.value, modelPath: sttModelEl.value },
+    sessionPrompt: sessionPromptEl.value,
+    jobDescriptionText: jdTextEl.value,
+    // An attached file is never overwritten by the (hidden) paste box.
+    keepJobDescriptionFile: Boolean(state.session?.jobDescriptionFile),
   };
   if (apiKeyEl.value.trim()) payload.apiKey = apiKeyEl.value.trim();
 
@@ -277,17 +363,20 @@ document.getElementById('save').addEventListener('click', async () => {
   if (result.models) state.models = { ...state.models, ...result.models };
   if (result.hasKey) state.hasKey = result.hasKey;
   state.visionModel = visionModelEl.value;
-  // A newly saved key can unlock the live model list.
+  // A newly saved key can unlock the live model list, and the session summary
+  // reflects the job description that was just saved.
   try {
     const refreshed = await window.tanaySettings.get();
     if (refreshed.commandCodeModels) state.commandCodeModels = refreshed.commandCodeModels;
     if (refreshed.answerModels) state.answerModels = refreshed.answerModels;
+    if (refreshed.session) state.session = refreshed.session;
   } catch {
     /* keep the list we already have */
   }
   syncModelField();
   syncVisionField();
   syncKeyField();
+  renderDocuments();
 });
 
 (async () => {
@@ -295,6 +384,8 @@ document.getElementById('save').addEventListener('click', async () => {
   state = { ...state, ...loaded, hotkeys: { ...loaded.hotkeys } };
   autoAnswerEl.checked = Boolean(loaded.autoAnswer);
   providerEl.value = loaded.provider;
+  sessionPromptEl.value = loaded.session?.prompt || '';
+  renderDocuments();
 
   // Populate the recogniser list from the models actually present on disk.
   sttEngineEl.value = loaded.transcription?.engine === 'whisper' ? 'whisper' : 'parakeet';

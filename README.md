@@ -221,7 +221,8 @@ argv template in config, so any CLI that takes a prompt as one argument works.
 ```bash
 npm run smoke        # boots both windows, reports state, exits
 npm test             # LLM, detection, picker, VAD lifecycle, tray
-npx electron . --composer-test   # typed box, Enter-to-send, screenshot attach
+npx electron . --composer-test   # typed box, Enter-to-send, screenshot queue + Send
+npx electron . --settings-test   # session-context controls and CV/JD bridge
 npx electron . --shot-test       # capture the screen, save the image, answer from it
 npm run build:ear    # compile the Parakeet helper (Swift package)
 npm run build:audio  # compile the system-audio helper (ScreenCaptureKit)
@@ -372,9 +373,12 @@ The panel is not only a listener:
 - **Type in the box at the bottom** and press `⏎` (`⇧⏎` for a new line). The
   text goes to the model exactly as written, with no waiting for speech and no
   question detection.
-- **`📷` captures the screen under the pointer** and attaches it to the question.
-  If the box has text, that text is what gets asked; if it is empty, CloudyAI
-  reads the screen and answers the most useful thing in it.
+- **`📷` captures the screen under the pointer** and queues it as a thumbnail
+  preview above the composer. Capture as many as you need (up to 5); click a
+  thumbnail for a full-size look, `×` to drop one. Nothing is sent until you
+  press `↵` / Send — the batch goes out with whatever text is in the box.
+  If the box is empty, CloudyAI reads the screenshots and answers the most
+  useful thing in them.
 - The answer starts with **On screen:** (one line saying what is visible), then
   works from the image. If the screen has no explicit question, it describes
   what is there and gives the next useful step instead of saying “no question
@@ -386,6 +390,34 @@ The panel is not only a listener:
   chat API is text-only.
 - On the first capture macOS asks for **Screen Recording**. If it was denied,
   the panel says exactly which switch to flip rather than failing silently.
+
+## Session context
+
+Settings → **Session context** feeds the model what it needs to answer as *you*
+for one session:
+
+- **Custom instructions** — a free-form system prompt for the session. It is
+  appended to the built-in rules inside `<session_instructions>` and takes
+  priority where the two conflict. Example: *“I am interviewing for a Staff
+  Backend Engineer role. Answer as me, in the first person, with at most three
+  bullets, and prefer Go and Postgres examples.”*
+- **CV** — upload a PDF, `.txt` or `.md`. The text is extracted once, cached,
+  and sent with every question so answers use your real projects, employers and
+  numbers. Uploads are copied into `<userData>/context`, so deleting the
+  original from Downloads does not empty the context.
+- **Job description** — upload a PDF/text file or paste the posting. Answers are
+  angled toward that role's wording, stack and priorities, without inventing
+  experience you do not have.
+
+Both documents are capped (20k characters) and sent as `<job_description>` and
+`<resume>` blocks ahead of the transcript. Scanned PDFs with no selectable text
+are rejected with a message asking you to paste the text instead.
+
+Answers are always written **in the first person** — the reply is read out loud
+by the candidate ("I built…", "I'd start with…"), never as an assistant
+describing them. The default interview prompt also enforces a headline sentence,
+2-4 bullets and at most one concrete example, so answers stay scannable and
+anchored in specifics rather than broad generalities.
 
 ## The transcript
 

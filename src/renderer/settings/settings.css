@@ -10,7 +10,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-y: auto;
 }
+
+body::-webkit-scrollbar { width: 9px; }
+body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 5px; }
 
 h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
 h2 {
@@ -41,7 +45,9 @@ section {
 .row.check span { flex: 1; color: #b9bac1; line-height: 1.4; }
 
 select,
-input[type='text'] {
+input[type='text'],
+input[type='password'],
+textarea {
   flex: 1;
   font: inherit;
   font-size: 12px;
@@ -53,7 +59,56 @@ input[type='text'] {
   outline: none;
 }
 select:focus,
-input[type='text']:focus { border-color: #7ee2a8; }
+input[type='text']:focus,
+input[type='password']:focus,
+textarea:focus { border-color: #7ee2a8; }
+
+textarea {
+  resize: vertical;
+  min-height: 58px;
+  line-height: 1.45;
+}
+textarea::placeholder { color: #5a5c64; }
+
+/* Session context: label over a full-width textarea. */
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 0;
+}
+.block > span { color: #b9bac1; }
+.block > span em { color: #6d707a; font-style: normal; font-size: 11px; }
+.block textarea { flex: none; width: 100%; }
+
+.doc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0 2px;
+}
+.doc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  color: #b9bac1;
+}
+.doc-file {
+  font-size: 11px;
+  color: #7ee2a8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-file.empty { color: #6d707a; }
+.doc-actions { display: flex; gap: 6px; flex: none; }
+.doc-actions button[hidden] { display: none; }
+
+button.mini { font-size: 11px; padding: 4px 9px; }
+
+.hint.top { margin: 0 0 4px; }
 
 .shortcut-row {
   display: flex;

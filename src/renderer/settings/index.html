@@ -72,6 +72,46 @@
       </label>
     </section>
 
+    <section>
+      <h2>Session context</h2>
+      <p class="hint top">Applies to every answer in this session — speech, typed and screenshot questions.</p>
+
+      <label class="block">
+        <span>Custom instructions <em>(system prompt)</em></span>
+        <textarea id="sessionPrompt" rows="3" spellcheck="false"
+          placeholder="e.g. I am interviewing for a Staff Backend Engineer role at Stripe. Answer as me, in the first person, with at most three bullets. Prefer Go and Postgres examples."></textarea>
+      </label>
+
+      <div class="doc-row">
+        <div class="doc-head">
+          <span>CV</span>
+          <span class="doc-file" id="resumeFile">No file</span>
+        </div>
+        <div class="doc-actions">
+          <button id="resumePick" class="mini">Upload PDF or text…</button>
+          <button id="resumeClear" class="mini ghost" hidden>Remove</button>
+        </div>
+      </div>
+      <p class="hint" id="resumeHint">The model answers using your real experience. PDF, .txt or .md.</p>
+
+      <div class="doc-row">
+        <div class="doc-head">
+          <span>Job description</span>
+          <span class="doc-file" id="jdFile">No file</span>
+        </div>
+        <div class="doc-actions">
+          <button id="jdPick" class="mini">Upload PDF or text…</button>
+          <button id="jdClear" class="mini ghost" hidden>Remove</button>
+        </div>
+      </div>
+      <label class="block">
+        <span>…or paste it</span>
+        <textarea id="jdText" rows="3" spellcheck="false"
+          placeholder="Paste the job posting here — responsibilities, required skills, the team."></textarea>
+      </label>
+      <p class="hint" id="jdHint">Answers are angled toward this role. An uploaded file wins over the pasted text.</p>
+    </section>
+
     <div id="status" class="status"></div>
 
     <footer>

@@ -21,10 +21,26 @@ Formatting contract:
 - Keep the whole reply under 180 words unless code is required.
 
 Transcription is imperfect. Reconstruct the intended question from the recent
-context. If nothing answerable was asked, reply with exactly: No question detected.`;
+context. If nothing answerable was asked, reply with exactly: No question detected.
+
+Voice:
+- The reply is spoken by the user, so write it in the first person: "I built…",
+  "I'd start with…", "My team…". Answer as the candidate, not as an assistant
+  describing them.
+- Never refer to the user in the third person ("the candidate", "the user") and
+  never narrate what you are doing. Code and diagrams stay as code.`;
 
 const INTERVIEW_TIPS = `You are helping a candidate in a live job interview.
 
+- Structure every answer for someone listening: one headline sentence that
+  answers directly, then 2-4 bullets with one idea each, then at most one
+  concrete example (a real project, system or metric from the resume). Skip the
+  example for purely factual or coding questions.
+- Be succinct. If a bullet can be said in five words, do not use fifteen. The
+  reader is mid-sentence; a tight, scannable answer beats a comprehensive one.
+- Anchor technical claims in something specific: the system, the scale, the
+  trade-off you chose, the number it moved. "We cut p99 from 900 ms to 120 ms
+  by batching writes" lands; "improved performance" does not.
 - Behavioural questions ("tell me about a time..."): answer with **Situation:**,
   **Task:**, **Action:**, **Result:**. The Result must carry a concrete metric.
 - Coding questions: give the straightforward approach first, then the optimal
@@ -35,8 +51,10 @@ const INTERVIEW_TIPS = `You are helping a candidate in a live job interview.
   because the panel is narrow. 6-12 nodes, then 4-6 bullets on components,
   data flow, bottlenecks and trade-offs.
 - Never invent an employer, a title, a date or a metric that is not in the
-  candidate's resume or in the conversation. If a number is needed and unknown,
-  say "quantify this" instead of inventing one.`;
+  candidate's resume, the job description or the conversation. If a number is
+  needed and unknown, say "quantify this" instead of inventing one.
+- When a job description is provided, angle the answer toward that role's
+  wording, stack and priorities, using only what the resume actually shows.`;
 
 const INTERVIEW = `${SHARED_RULES}
 
@@ -100,14 +118,29 @@ Formatting contract:
 - If the screenshot is unreadable or mostly empty, say exactly what you can see instead of guessing.
 ${CODING_RULES}`;
 
-function systemPrompt(profile, { screenshot = false } = {}) {
+function systemPrompt(profile, { screenshot = false, sessionPrompt = '' } = {}) {
   const tips = TIPS[profile] || INTERVIEW_TIPS;
-  if (screenshot) return `${SCREENSHOT_RULES}\n\n${tips}`;
-  return `${PROFILES[profile] || INTERVIEW}\n${CODING_RULES}`;
+  const base = screenshot
+    ? `${SCREENSHOT_RULES}\n\n${tips}`
+    : `${PROFILES[profile] || INTERVIEW}\n${CODING_RULES}`;
+
+  // Session instructions are the user's own words and outrank the defaults
+  // above; they live in a tag so the model can tell them apart from the rules.
+  const extra = String(sessionPrompt || '').trim();
+  if (!extra) return base;
+  return `${base}\n\n<session_instructions>\nThese instructions come from the user for this session and take priority over the defaults above where they conflict.\n${extra.slice(0, 4000)}\n</session_instructions>`;
 }
 
-function buildUserPrompt({ transcript, context = [], resume = '', profile = 'interview', screenshot = false }) {
+function buildUserPrompt({
+  transcript,
+  context = [],
+  resume = '',
+  jobDescription = '',
+  profile = 'interview',
+  screenshot = false,
+}) {
   const parts = [];
+  if (jobDescription) parts.push(`<job_description>\n${jobDescription.slice(0, 8000)}\n</job_description>`);
   if (resume) parts.push(`<resume>\n${resume.slice(0, 12000)}\n</resume>`);
   if (context.length) {
     parts.push(`<recent>\n${context.map((c) => `- ${c}`).join('\n')}\n</recent>`);
