@@ -14,11 +14,32 @@ const IMPERATIVE =
   /\b(tell me|walk me through|talk me through|describe|explain|design|implement|write|solve|optimi[sz]e|debug|refactor|compare|difference between|what happens|how would you|why would you|what would you)\b/i;
 
 // First-person narrative is the strongest signal that the candidate is talking.
+// Only pronouns and first-person verbs belong here: discourse markers like
+// "so", "yeah" and "okay" open questions just as often, and treating them as
+// narration is what used to swallow "So what is polymorphism?".
 const NARRATIVE =
-  /^(i|we|my|our|me|yeah|yes|so|okay|um|uh)\b|\bi (worked|built|led|used|think|believe|handled|implemented|migrated|wrote)\b|\b(at|in) my (previous|last|current)\b|\bin my (experience|role|project)\b/i;
+  /^(i|we|my|our|me)\b|\bi (worked|built|led|used|think|believe|handled|implemented|migrated|wrote)\b|\b(at|in) my (previous|last|current)\b|\bin my (experience|role|project)\b/i;
 
-// Filler that survives transcription and carries no signal either way.
-const FILLER = /^(okay|ok|so|now|right|alright|great|thanks|thank you|cool|well|and|but|mm|hmm)\b[,\s]*/i;
+// Filler that survives transcription and carries no signal either way. These
+// stack in real speech ("right, so, um, okay so…"), so the stripper loops
+// instead of peeling one off.
+const FILLER =
+  /^(okay|ok|so|now|right|alright|great|thanks|thank you|cool|well|and|but|mm|hmm|um|uh|er|ah|like|yeah|yes|you know)\b[,\s]*/i;
+
+/**
+ * Drop every leading filler word. Returns '' when the line was nothing but
+ * filler, which callers treat as "nothing was said". Punctuation left behind
+ * by stripping ("Yeah." -> ".") does not count as speech.
+ */
+function stripFiller(text) {
+  let out = String(text || '').trim();
+  for (let i = 0; i < 8; i++) {
+    const next = out.replace(FILLER, '').trim();
+    if (next === out) break;
+    out = next;
+  }
+  return /[a-z0-9]/i.test(out) ? out : '';
+}
 
 // "What I did was..." / "How we solved it..." look interrogative by their first
 // word but are the candidate narrating. This is the most common false positive.
@@ -37,13 +58,16 @@ function wordCount(text) {
 }
 
 /**
- * @returns {{score: number, isQuestion: boolean, strong: boolean, words: number, reason: string}}
+ * @returns {{score: number, isQuestion: boolean, speculativeSafe: boolean, words: number, reason: string}}
  */
 function scoreQuestion(text) {
   const raw = (text || '').trim();
-  if (!raw) return { score: 0, isQuestion: false, strong: false, words: 0, reason: 'empty' };
+  if (!raw)
+    return { score: 0, isQuestion: false, speculativeSafe: false, words: 0, reason: 'empty' };
 
-  const t = raw.replace(FILLER, '').trim();
+  const t = stripFiller(raw);
+  if (!t)
+    return { score: 0, isQuestion: false, speculativeSafe: false, words: 0, reason: 'filler-only' };
   let score = 0;
   const reasons = [];
 
@@ -83,7 +107,6 @@ function scoreQuestion(text) {
   return {
     score,
     isQuestion: score >= 2,
-    strong: score >= 3, // answer now, do not wait for the utterance to close
     words,
     // Answering from a live caption is only safe once the question has actually
     // ended. "Can you explain the difference between" scores as a question but
@@ -103,4 +126,4 @@ function similarity(a, b) {
   return shared / Math.max(A.size, B.size);
 }
 
-module.exports = { scoreQuestion, similarity, normalize, wordCount };
+module.exports = { scoreQuestion, similarity, normalize, wordCount, stripFiller };

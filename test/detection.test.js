@@ -4,7 +4,7 @@
 // interviews (interviewer questions and candidate answers).
 
 const assert = require('assert');
-const { scoreQuestion, similarity } = require('../src/main/detection');
+const { scoreQuestion, similarity, stripFiller } = require('../src/main/detection');
 
 const SHOULD_ASK = [
   'What is a closure in JavaScript?',
@@ -17,6 +17,14 @@ const SHOULD_ASK = [
   'What happens when you type a URL into the browser?',
   'So, what is polymorphism?',
   'Describe a situation where you disagreed with your manager.',
+  //
+  // Real speech: fillers stack, and ASR transcribes "um" and "uh". Every one of
+  // these used to be dropped as narration.
+  //
+  'Right, so what would you do if the database went down',
+  'Um, how do you handle conflict',
+  'Okay so, can you tell me about a time you shipped something late',
+  'Yeah and how would you test that',
 ];
 
 const SHOULD_NOT_ASK = [
@@ -35,7 +43,20 @@ const SHOULD_NOT_ASK = [
   //
   'the',
   'what is',
+  //
+  // Filler-only lines. Stripping leaves the sentence punctuation behind, which
+  // must not be mistaken for a question.
+  //
+  'Yeah.',
+  'Um.',
+  'Right, so, um,',
 ];
+
+// A filler-only final is what the ⌘J fallback uses to reach for the newest real
+// line instead of answering nothing at all.
+assert.strictEqual(stripFiller('Right, so, um,'), '', 'filler-only line must strip to empty');
+assert.strictEqual(stripFiller('Yeah and how would you test that'), 'how would you test that');
+assert.strictEqual(stripFiller('What is a closure?'), 'What is a closure?');
 
 let failures = 0;
 

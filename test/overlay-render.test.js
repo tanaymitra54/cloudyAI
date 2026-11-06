@@ -91,5 +91,23 @@ check('prose, bullets and inline code still render', () => {
   assert.strictEqual((html.match(/<li>/g) || []).length, 2);
 });
 
+// The transcript panel used to throw ReferenceError on every line, because the
+// renderer pulled only `render` out of CloudyRender and then called escapeHtml.
+// This check fails if the two drift apart again.
+check('overlay pulls every renderer helper it calls', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/overlay/overlay.js'), 'utf8');
+  const destructure = src.match(/const\s*\{([^}]*)\}\s*=\s*window\.CloudyRender/);
+  assert.ok(destructure, 'overlay must destructure window.CloudyRender');
+  const pulled = destructure[1].split(',').map((s) => s.trim()).filter(Boolean);
+  const exported = Object.keys(require('../src/renderer/overlay/render'));
+  for (const helper of exported) {
+    const called = new RegExp(`\\b${helper}\\s*\\(`).test(src);
+    if (called) assert.ok(pulled.includes(helper), `overlay calls ${helper}() but does not destructure it`);
+  }
+  assert.ok(pulled.includes('escapeHtml'), 'transcript rendering needs escapeHtml');
+});
+
 console.log(`\n${failures === 0 ? `all ${total} overlay render cases passed` : `${failures}/${total} FAILED`}`);
 process.exit(failures ? 1 : 0);

@@ -4,7 +4,7 @@
 // the live partial clearing and the final landing in `turns`.
 
 const assert = require('assert');
-const { pickQuestion, shouldSkipAnswer } = require('../src/main/pick');
+const { pickQuestion, shouldSkipAnswer, conversationFor } = require('../src/main/pick');
 
 const now = Date.now();
 const Q1 = 'What is a closure in JavaScript?';
@@ -237,6 +237,32 @@ check('skip: missing ids are never skipped', () => {
     false
   );
   assert.strictEqual(shouldSkipAnswer({}), false);
+});
+
+// --- Full conversation ---------------------------------------------------
+
+check('conversation: every turn is kept, oldest first', () => {
+  const conv = conversationFor(
+    [{ text: 'a' }, { text: 'b' }, { text: 'c' }],
+    'd'
+  );
+  assert.deepStrictEqual(conv, ['a', 'b', 'c']);
+});
+
+check('conversation: the trigger line is not repeated', () => {
+  const conv = conversationFor([{ text: 'a' }, { text: 'b' }], 'b');
+  assert.deepStrictEqual(conv, ['a']);
+});
+
+check('conversation: newest kept when the cap is hit', () => {
+  const turns = [{ text: 'old'.repeat(50) }, { text: 'newest question here' }];
+  const conv = conversationFor(turns, '', 30);
+  assert.deepStrictEqual(conv, ['newest question here']);
+});
+
+check('conversation: empty input is safe', () => {
+  assert.deepStrictEqual(conversationFor([], ''), []);
+  assert.deepStrictEqual(conversationFor(undefined, undefined), []);
 });
 
 console.log(`\n${failures === 0 ? `all ${total} pick cases passed` : `${failures}/${total} FAILED`}`);

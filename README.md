@@ -90,7 +90,6 @@ Changes apply immediately — no restart.
   whisper.cpp; system audio (default) or the microphone. Switching restarts the
   recogniser live.
 - **Provider / model** — switches the answer backend live.
-- **Auto-answer** — same toggle as the menu-bar checkbox.
 
 Shortcuts can also be edited by hand in `config.json`; the file is watched, so
 saving it re-registers everything on the spot (`[hotkeys]` lines in the app log
@@ -117,10 +116,12 @@ thing.
 | `⌘⇧R` | clear the transcript |
 | `⌘⇧↵` | answer the last thing said, no question check |
 
-## Manual vs auto
+## Manual-only answering
 
-By default CloudyAI **listens to the call and answers only when you press ⌘J**.
-Only system audio is captured, so your own voice is not in the transcript.
+CloudyAI **listens to the call and answers only when you press ⌘J**. There is no
+auto-answer mode: nothing is ever sent to a model without a keypress. Only
+system audio is captured, so your own voice is not in the transcript.
+
 Pressing ⌘J uses the newest utterance:
 
 - if a question is still open or its decode is running, the live/pending text is
@@ -128,14 +129,17 @@ Pressing ⌘J uses the newest utterance:
 - otherwise the newest utterance from the last 20 seconds is answered, even if
   the question heuristic scores it low — it never walks back to an older
   question while a newer one exists;
+- if the newest line was nothing but filler ("right, so, um"), the newest real
+  line before it is answered instead;
 - if nothing was heard in that window, it says so instead of answering stale
   text.
 
+Every answer gets the **whole session transcript**, not just the last few
+lines, capped at 12,000 characters and keeping the newest. That is what lets a
+follow-up like "and what tradeoffs?" resolve against the question before it.
+
 Pressing ⌘J twice, or while an answer is already streaming, does not restart the
 request — it would throw away tokens already on screen.
-
-Turn on *Auto-answer questions* in the menu-bar menu (or set `"autoAnswer": true`)
-if you want the speculative behaviour instead.
 
 ## How the pipeline works
 
@@ -144,8 +148,7 @@ system audio ── ScreenCaptureKit helper (16 kHz mono) ──► CloudyVoice 
         │                                                                                          └── whisper-cli fallback
         │                                                                                          └── live caption (tail 4.5 s)
         ▼
-  question heuristic ──► DeepSeek / opencode / commandcode ──► streaming answer ──► overlay
-```
+  question heuristic ──► DeepSeek / opencode / commandcode ──► streaming answer ──► overlay```
 
 - Only the **system output** is captured. Your microphone is off by default, so
   your own voice is never transcribed and the other participant is captured
@@ -153,8 +156,8 @@ system audio ── ScreenCaptureKit helper (16 kHz mono) ──► CloudyVoice 
 - `silenceMs` (500 ms) closes an utterance; `maxSegmentMs` (15 s) forces a cut on
   continuous speech. The endpointing is deliberately shorter than the old
   700 ms: system audio is clean, and the final decode is ~140 ms.
-- The question heuristic only auto-answers interrogative utterances. Anything
-  else is answered with `⌘⇧↵`.
+- The question heuristic is advisory only: it decides whether the footer calls
+  a line a question, never whether ⌘J spends a request.
 - Starting a new request cancels the previous one. A stale answer mid-call is
   worse than none.
 

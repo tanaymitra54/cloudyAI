@@ -20,8 +20,14 @@ Formatting contract:
 - Bold the keywords, technologies and numbers a person would say out loud.
 - Keep the whole reply under 180 words unless code is required.
 
-Transcription is imperfect. Reconstruct the intended question from the recent
-context. If nothing answerable was asked, reply with exactly: No question detected.
+Transcription is imperfect. Reconstruct the intended question from the whole
+conversation, not just the newest line. Someone may ask a follow-up that only
+makes sense against what came before.
+
+Never reply that no question was detected. If the newest line is not itself a
+question, answer the most recent thing in the conversation that still needs an
+answer. Only if the conversation genuinely contains nothing answerable, reply
+with exactly: waiting for a question.
 
 Voice:
 - The reply is spoken by the user, so write it in the first person: "I built…",
@@ -133,7 +139,7 @@ function systemPrompt(profile, { screenshot = false, sessionPrompt = '' } = {}) 
 
 function buildUserPrompt({
   transcript,
-  context = [],
+  conversation = [],
   resume = '',
   jobDescription = '',
   profile = 'interview',
@@ -142,8 +148,10 @@ function buildUserPrompt({
   const parts = [];
   if (jobDescription) parts.push(`<job_description>\n${jobDescription.slice(0, 8000)}\n</job_description>`);
   if (resume) parts.push(`<resume>\n${resume.slice(0, 12000)}\n</resume>`);
-  if (context.length) {
-    parts.push(`<recent>\n${context.map((c) => `- ${c}`).join('\n')}\n</recent>`);
+  // The whole session, oldest first, so a follow-up can be read against what
+  // the interviewer actually said before it. Capped by the caller.
+  if (conversation.length) {
+    parts.push(`<conversation>\n${conversation.map((c) => `- ${c}`).join('\n')}\n</conversation>`);
   }
   parts.push(`<transcript>\n${transcript}\n</transcript>`);
   if (screenshot) {
@@ -155,8 +163,8 @@ function buildUserPrompt({
     screenshot
       ? 'Answer from the attached screenshot and the request above. Do not reply that no question was detected.'
       : profile === 'interview'
-        ? 'Answer the most recent question in the transcript. If it is a follow-up, answer the follow-up.'
-        : 'Respond to the most recent request in the transcript.'
+        ? 'Answer the newest answerable question in the conversation, including the line in <transcript>. If the newest line is a follow-up, answer the follow-up. Never reply that no question was detected.'
+        : 'Respond to the newest answerable request in the conversation, including the line in <transcript>.'
   );
   return parts.join('\n\n');
 }

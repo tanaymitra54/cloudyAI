@@ -83,7 +83,7 @@ function createCapture() {
   return capture;
 }
 
-/** Settings window: shortcut capture, provider/model, auto-answer. */
+/** Settings window: shortcut capture, provider/model. */
 function createSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) {
     settingsWin.show();
@@ -198,14 +198,12 @@ function refreshTray({
   onToggle,
   onListen,
   onAnswer,
-  onToggleAuto,
   onProvider,
   onEditShortcuts,
   onSettings,
   onQuit,
   isListening,
   provider,
-  autoAnswer,
   hotkeyAnswer,
 }) {
   if (!tray) return;
@@ -215,12 +213,6 @@ function refreshTray({
       { label: `Answer last question  ${hotkeyAnswer || ''}`.trim(), click: onAnswer },
       { type: 'separator' },
       { label: 'Show / hide overlay', click: onToggle },
-      {
-        label: 'Auto-answer questions',
-        type: 'checkbox',
-        checked: Boolean(autoAnswer),
-        click: () => onToggleAuto(),
-      },
       { label: 'Settings…', accelerator: undefined, click: onSettings },
       {
         label: 'Answers from',

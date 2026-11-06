@@ -143,7 +143,36 @@ function isSetId(value) {
   return value !== undefined && value !== null && value !== '';
 }
 
+// The whole session goes to the model, but one request cannot grow without
+// bound: once this cap is hit the oldest turns are dropped, because the thing
+// being answered is always at the end.
+const CONVERSATION_MAX_CHARS = 12000;
+
 /**
+ * Every finished turn, oldest first, newest kept when the cap is reached.
+ * The trigger text is already the newest line, so it is not repeated here.
+ *
+ * @param {Array<{text: string}>} turns
+ * @param {string} [trigger] the line being answered right now
+ * @param {number} [maxChars]
+ * @returns {string[]}
+ */
+function conversationFor(turns = [], trigger = '', maxChars = CONVERSATION_MAX_CHARS) {
+  if (!Array.isArray(turns)) return [];
+  const parts = turns.map((t) => String(t?.text || '').trim()).filter(Boolean);
+  const last = String(trigger || '').trim();
+  if (parts.length && parts[parts.length - 1] === last) parts.pop();
+
+  const kept = [];
+  let size = 0;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const next = parts[i].length + 1;
+    if (size + next > maxChars) break;
+    size += next;
+    kept.unshift(parts[i]);
+  }
+  return kept;
+}/**
  * True only when a busy engine is already answering this exact utterance.
  *
  * This replaces the old silent similarity block, which could suppress a new
@@ -168,7 +197,9 @@ function shouldSkipAnswer({ engineBusy, lastAnswered, picked } = {}) {
 module.exports = {
   pickQuestion,
   shouldSkipAnswer,
+  conversationFor,
   MAX_TEXT,
   MAX_MERGED_TURNS,
   FRAGMENT_GAP_MS,
+  CONVERSATION_MAX_CHARS,
 };

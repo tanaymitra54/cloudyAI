@@ -26,7 +26,7 @@ let shots = [];
 
 // Markdown-lite rendering and C++ colouring live in render.js, which is
 // also required directly by the tests.
-const { render } = window.CloudyRender;
+const { render, escapeHtml } = window.CloudyRender;
 
 
 function paint() {
@@ -208,9 +208,9 @@ window.tanay.onTranscriptReset(() => {
 window.tanay.onAnswerStart(() => {
   document.getElementById('actions').hidden = true;
   shotBtn.disabled = false;
-  // A longer version of the question arrived (the speculative answer was
-  // superseded). Keep the existing text on screen, dimmed, and swap it only
-  // when new tokens actually exist — otherwise the panel blanks mid-read.
+  // A new question was asked while the previous answer is still on screen.
+  // Keep the existing text visible, dimmed, and swap it only when new tokens
+  // actually exist — otherwise the panel blanks mid-read.
   if (raw) {
     pendingSwap = true;
     answerEl.classList.add('stale');

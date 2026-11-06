@@ -26,7 +26,6 @@ const keyHintEl = document.getElementById('keyHint');
 const sttModelEl = document.getElementById('sttModel');
 const sttEngineEl = document.getElementById('sttEngine');
 const audioSourceEl = document.getElementById('audioSource');
-const autoAnswerEl = document.getElementById('autoAnswer');
 const sessionPromptEl = document.getElementById('sessionPrompt');
 const jdTextEl = document.getElementById('jdText');
 const resumeFileEl = document.getElementById('resumeFile');
@@ -339,7 +338,6 @@ document.getElementById('save').addEventListener('click', async () => {
 
   const payload = {
     hotkeys: state.hotkeys,
-    autoAnswer: autoAnswerEl.checked,
     provider: state.provider,
     models,
     visionModel: visionModelEl.value,
@@ -382,7 +380,6 @@ document.getElementById('save').addEventListener('click', async () => {
 (async () => {
   const loaded = await window.tanaySettings.get();
   state = { ...state, ...loaded, hotkeys: { ...loaded.hotkeys } };
-  autoAnswerEl.checked = Boolean(loaded.autoAnswer);
   providerEl.value = loaded.provider;
   sessionPromptEl.value = loaded.session?.prompt || '';
   renderDocuments();

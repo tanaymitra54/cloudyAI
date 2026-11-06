@@ -85,11 +85,6 @@ const DEFAULTS = {
   sessionPrompt: '',
   jobDescription: '',
   jobDescriptionPath: '',
-  contextTurns: 3,
-  // Manual by default: the app transcribes continuously but only answers when
-  // you press the hotkey. Turn this on to have it answer questions by itself.
-  autoAnswer: false,
-  // Every shortcut lives here and can be edited while the app runs.
   hotkeys: {
     answer: 'CommandOrControl+J', // answer the last question
     answerLastUtterance: 'CommandOrControl+Shift+Enter', // answer whatever was said last

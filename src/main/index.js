@@ -33,7 +33,7 @@ const hotkeys = require('./hotkeys');
 const { CloudyVoice } = require('./stt/CloudyVoice');
 const { CloudyAudio } = require('./audio/CloudyAudio');
 const { AnswerEngine } = require('./llm');
-const { pickQuestion, shouldSkipAnswer } = require('./pick');
+const { pickQuestion, shouldSkipAnswer, conversationFor } = require('./pick');
 const docs = require('./docs');
 
 // ------------------------------------------------------------- resolve binaries
@@ -80,19 +80,16 @@ function resolveAudioBin() {
 }
 
 // ------------------------------------------------------------ question detection
-const { scoreQuestion, similarity, wordCount } = require('./detection');
-
+const { stripFiller } = require('./detection');
 // ------------------------------------------------------------------- app state
 let voice = null;
 let systemAudio = null;
 let engine = null;
 let listening = false;
 let turns = [];
-let askTimer = null;
 let resumeText = '';
 let jobDescriptionText = '';
 let lastAnswered = { text: '', at: 0, utteranceId: null };
-let speculated = false; // at most one speculative answer per utterance
 let starting = false; // guards against overlapping getUserMedia requests
 
 function overlaySend(channel, payload) {
@@ -120,7 +117,7 @@ function metaLine() {
   const cfg = config.load();
   const section = cfg[SECTIONS[cfg.provider] || cfg.provider] || {};
   const model = section.model || cfg.provider;
-  const mode = cfg.autoAnswer ? 'auto-answer' : '⌘J to answer';
+  const mode = '⌘J to answer';
   return `${cfg.provider} · ${model} · ${mode} · ${turns.length} turns`;
 }
 
@@ -132,8 +129,6 @@ function pushMeta() {
 function clearSession() {
   turns = [];
   lastAnswered = { text: '', at: 0, utteranceId: null };
-  speculated = false;
-  clearTimeout(askTimer);
   engine?.cancel();
   // Drop the in-flight utterance too, not just the visible text.
   voice?.clear();
@@ -216,7 +211,7 @@ async function loadContextDocs({ quiet = false } = {}) {
 }
 
 // ---------------------------------------------------------------- answer flow
-function ask(triggerText, { speculative = false, images = null, utteranceId = null } = {}) {
+function ask(triggerText, { images = null, utteranceId = null } = {}) {
   const cfg = config.load();
   const transcript = triggerText || turns.slice(-1).map((t) => t.text).join('\n');
   if (!transcript.trim()) return;
@@ -230,7 +225,7 @@ function ask(triggerText, { speculative = false, images = null, utteranceId = nu
     }),
     user: prompts.buildUserPrompt({
       transcript,
-      context: turns.slice(-1 - cfg.contextTurns, -1).map((t) => t.text),
+      conversation: conversationFor(turns, transcript),
       resume: resumeText,
       jobDescription: jobDescriptionText,
       profile: cfg.profile,
@@ -340,50 +335,16 @@ async function captureScreenshot() {
 }
 
 function onFinalTranscript(text, meta = {}) {
-  speculated = false; // the utterance is over; the next one may speculate again
   turns.push({
     text,
     at: meta.speechEndAt || Date.now(),
     utteranceId: meta.utteranceId ?? null,
   });
-  if (turns.length > 60) turns = turns.slice(-60);
+  if (turns.length > 200) turns = turns.slice(-200);
 
   overlaySend('tanay:caption', ''); // the live line is now committed below
   overlaySend('tanay:transcript', text);
   pushMeta();
-
-  // Manual mode: keep transcribing, but wait for the hotkey before spending a
-  // request. This is what stops it from reacting to your own voice.
-  if (!config.load().autoAnswer) return;
-
-  // If the speculative pass already answered this, do not burn a second call.
-  if (lastAnswered.text) {
-    const sim = similarity(text, lastAnswered.text);
-    const grew = wordCount(text) > wordCount(lastAnswered.text) * 1.15;
-    // Skipping is only safe when the final says nothing the speculative answer
-    // did not already see. A question that kept growing deserves a fresh answer.
-    if (sim > 0.5 && !grew) return;
-  }
-
-  const verdict = scoreQuestion(text);
-  if (!verdict.isQuestion) return;
-
-  // A strong question can be answered immediately; a weak one waits briefly in
-  // case the speaker is still finishing the sentence.
-  clearTimeout(askTimer);
-  askTimer = setTimeout(() => ask(text), verdict.strong ? 0 : 250);
-}
-
-// Answer from the live caption, before the utterance even closes. This hides
-// the VAD silence window plus the final whisper decode (~1 s in practice).
-function onPartialTranscript(text) {
-  if (!config.load().autoAnswer) return;
-  if (speculated) return;
-  const verdict = scoreQuestion(text);
-  if (!verdict.speculativeSafe) return;
-  if (lastAnswered.text && similarity(text, lastAnswered.text) > 0.5) return;
-  speculated = true;
-  ask(text, { speculative: true });
 }
 
 /**
@@ -430,8 +391,6 @@ function waitForFinal(timeoutMs) {
 
 /** Hotkey path: no debounce, no waiting for the utterance to close. */
 async function answerNow() {
-  clearTimeout(askTimer);
-
   let picked = currentPick();
 
   // The utterance just closed and its decode is in flight. Wait for it rather
@@ -441,7 +400,13 @@ async function answerNow() {
     picked = currentPick();
   }
 
-  const question = picked?.text || '';
+  const pickedText = String(picked?.text || '').trim();
+  // A line that is only filler ("right, so, um") carries no question, but the
+  // conversation still does. Fall back to the newest real line instead of
+  // spending nothing and showing an error.
+  const conversation = conversationFor(turns, pickedText);
+  const question = pickedText && stripFiller(pickedText) ? pickedText : conversation[conversation.length - 1] || '';
+
   if (!question) {
     overlaySend('tanay:error', 'Nothing heard yet — start listening first (⌘⇧L).');
     overlaySend('tanay:status', listening ? 'listening' : 'idle');
@@ -535,7 +500,6 @@ function registerIpcHandlers() {
     return {
       hotkeys: cfg.hotkeys,
       defaults: config.DEFAULTS.hotkeys,
-      autoAnswer: cfg.autoAnswer,
       provider: cfg.provider,
       visionModel: cfg.visionModel || '',
       session: {
@@ -618,7 +582,7 @@ function registerIpcHandlers() {
   ipcMain.handle('settings:save', async (_event, payload = {}) => {
     const patch = {};
     if (payload.hotkeys) patch.hotkeys = payload.hotkeys;
-    if (typeof payload.autoAnswer === 'boolean') patch.autoAnswer = payload.autoAnswer;
+
     if (payload.provider) patch.provider = payload.provider;
     if (typeof payload.visionModel === 'string') patch.visionModel = payload.visionModel.trim();
     if (typeof payload.sessionPrompt === 'string') {
@@ -871,7 +835,6 @@ function stopListening() {
   systemAudio?.stop();
   systemAudio = null;
   if (!listening) return;
-  clearTimeout(askTimer);
   voice?.stop();
   windows.sendToCapture('stop');
   listening = false;
@@ -888,18 +851,12 @@ function trayState() {
   return {
     isListening: listening,
     provider: cfg.provider,
-    autoAnswer: cfg.autoAnswer,
     hotkeyAnswer: windows.toSymbols ? windows.toSymbols(cfg.hotkeys?.answer) : '⌘J',
     onToggle: () => windows.toggleOverlay(),
     onListen: toggleListening,
     onAnswer: answerNow,
     onEditShortcuts: () => windows.createSettings(),
     onSettings: () => windows.createSettings(),
-    onToggleAuto: () => {
-      config.save({ autoAnswer: !config.load().autoAnswer });
-      pushMeta();
-      windows.refreshTray(trayState());
-    },
     onProvider: (p) => {
       config.save({ provider: p });
       pushMeta();
