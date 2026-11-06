@@ -11,6 +11,11 @@ body {
   overflow: hidden;
 }
 
+/* The overlay is a heads-up panel, not a web page: the cursor never changes
+   over it, so hovering never gives away what is clickable. */
+body,
+body * { cursor: default; }
+
 .panel {
   height: 100%;
   display: flex;
@@ -41,7 +46,6 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 6px;
   padding: 3px 8px;
-  cursor: pointer;
 }
 
 .bar button:hover { color: #fff; background: rgba(255, 255, 255, 0.13); }
@@ -217,9 +221,101 @@ body {
   border: none;
   border-radius: 6px;
   padding: 5px 10px;
-  cursor: pointer;
 }
 .actions button:hover { background: #f6d58c; }
+
+/* Queued screenshots: thumbnails sit above the composer until Send.
+   Horizontal scroll keeps a 5-shot batch from stealing answer space. */
+.shots {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 0;
+  overflow-x: auto;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.shots[hidden] { display: none; }
+/* One divider only: the strip takes over the seam when it is showing. */
+.shots:not([hidden]) + .composer { border-top: 0; }
+.shots::-webkit-scrollbar { height: 6px; }
+.shots::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 3px; }
+
+.shot {
+  position: relative;
+  flex: none;
+}
+
+.shot-open {
+  display: block;
+  padding: 0;
+  width: 96px;
+  height: 60px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  overflow: hidden;
+  background: #0b0c0e;
+}
+.shot-open:hover { border-color: rgba(126, 226, 168, 0.8); }
+.shot-open img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+
+.shot-x {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: #0b0c0e;
+  background: #e8e8ea;
+  border: none;
+  border-radius: 50%;
+}
+.shot-x:hover { background: #f07070; color: #fff; }
+
+/* Full-size look at one queued screenshot. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.82);
+  -webkit-app-region: no-drag;
+}
+.lightbox[hidden] { display: none; }
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  object-fit: contain;
+}
+.lightbox button {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  color: #0b0c0e;
+  background: #e8e8ea;
+  border: none;
+  border-radius: 50%;
+}
+.lightbox button:hover { background: #fff; }
 
 /* Typed questions live at the bottom: the answer area scrolls, this stays put. */
 .composer {
@@ -263,11 +359,10 @@ body {
   border-radius: 8px;
   width: 30px;
   height: 28px;
-  cursor: pointer;
   flex: none;
 }
 .composer button:hover { background: #93ebba; }
-.composer button:disabled { background: rgba(255, 255, 255, 0.12); color: #63656e; cursor: default; }
+.composer button:disabled { background: rgba(255, 255, 255, 0.12); color: #63656e; }
 
 .foot {
   padding: 5px 12px 7px;
