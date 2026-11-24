@@ -89,6 +89,25 @@ const DEFAULTS = {
     width: 1020,
     height: 680,
     opacity: 0.96,
+    // Mouse-only way to summon the panel when global hotkeys are being swallowed
+    // (kiosk apps, lockdown software). Resting the pointer in a screen corner for
+    // dwellMs toggles the panel. No hook, no permission, no elevation.
+    cornerTrigger: {
+      enabled: false,
+      corner: 'top-left', // top-left | top-right | bottom-left | bottom-right
+      size: 4, // px from the edge, measured inside the work area
+      dwellMs: 400,
+    },
+    // Windows: N clicks anywhere toggle the panel. Needs the CloudyMouse helper
+    // (a low-level mouse hook), so it cannot see clicks aimed at an elevated
+    // window. Enabled by default because it is the trigger that survives a
+    // kiosk that swallows the keyboard.
+    mouseTrigger: {
+      enabled: process.platform === 'win32',
+      clicks: 3,
+      windowMs: 1200, // all N clicks must land inside this window
+      bin: '', // empty = bundled resources/mouse/CloudyMouse.exe
+    },
   },
   profile: 'interview',
   resumePath: '',

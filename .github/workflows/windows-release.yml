@@ -36,6 +36,19 @@ jobs:
       - name: Fetch the speech model
         run: node scripts/get-model.js base --out vendor/models
 
+      # Three-clicks-anywhere needs a global mouse hook, which Electron does not
+      # expose, so it ships as a tiny static exe.
+      - name: Build the mouse-click helper
+        shell: pwsh
+        run: |
+          cmake -S native/CloudyMouse -B build-cloudymouse -A x64
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build build-cloudymouse --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+          New-Item -ItemType Directory -Force -Path vendor/mouse | Out-Null
+          Copy-Item build-cloudymouse/Release/CloudyMouse.exe vendor/mouse/CloudyMouse.exe -Force
+          Write-Host "staged vendor/mouse/CloudyMouse.exe"
+
       - name: Smoke-test the bundled recogniser
         shell: pwsh
         run: |
@@ -43,6 +56,21 @@ jobs:
           if ($out -notmatch 'whisper') { throw "whisper-cli.exe did not start: $out" }
           if (-not (Test-Path '.\vendor\models\ggml-base.en.bin')) { throw "speech model missing" }
           Write-Host "whisper-cli.exe starts and the model is staged"
+
+      # Informational: a hook cannot be installed on a session without an
+      # interactive desktop, which some runners lack. Report, never fail.
+      - name: Smoke-test the mouse helper
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath vendor/mouse/CloudyMouse.exe -RedirectStandardOutput mouse-out.txt -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          if ($p.HasExited) {
+            Write-Warning "CloudyMouse exited ($($p.ExitCode)): $(Get-Content mouse-out.txt -Raw)"
+          } else {
+            Stop-Process -Id $p.Id -Force
+            $out = Get-Content mouse-out.txt -Raw
+            if ($out -notmatch 'ready') { Write-Warning "CloudyMouse did not report ready: $out" } else { Write-Host "CloudyMouse hook installed" }
+          }
 
       - name: Install dependencies
         run: npm ci
@@ -63,8 +91,10 @@ jobs:
           $res = 'dist\win-unpacked\resources'
           $exe = Join-Path $res 'whisper\whisper-cli.exe'
           $model = Join-Path $res 'models\ggml-base.en.bin'
+          $mouse = Join-Path $res 'mouse\CloudyMouse.exe'
           if (-not (Test-Path $exe)) { throw "whisper-cli.exe missing from the package" }
           if (-not (Test-Path $model)) { throw "speech model missing from the package" }
+          if (-not (Test-Path $mouse)) { throw "CloudyMouse.exe missing from the package" }
           $dlls = Get-ChildItem (Join-Path $res 'whisper') -Filter *.dll -ErrorAction SilentlyContinue
           Write-Host ("packaged recogniser: {0:N0} MB exe, {1:N0} MB model, {2} runtime DLLs" -f `
             ((Get-Item $exe).Length/1MB), ((Get-Item $model).Length/1MB), $dlls.Count)

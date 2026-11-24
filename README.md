@@ -167,6 +167,53 @@ The panel has two panes: the **live conversation** on the left, as chat bubbles
 (the other participant on the left, your own voice on the right), and the
 **answer** to the last detected question on the right.
 
+## Mouse control
+
+Global hotkeys are the fast path, but they are the first thing a kiosk or
+lockdown app blocks. Everything important is also reachable with a mouse.
+
+| Gesture | What it does |
+|---|---|
+| **Three left-clicks anywhere** (Windows) | show / hide the panel |
+| Left-click the tray icon | show / hide the panel |
+| Right-click the tray icon | answer the last question, start/stop listening, settings, provider, quit |
+| Click the panel header | listen, screenshot, clear, settings, hide |
+| Click the composer | type a question, send, attach a screenshot |
+
+**Three clicks anywhere** is on by default on Windows. It needs a global hook,
+so it ships as a small helper (`resources/mouse/CloudyMouse.exe`) and has the
+one limitation every hook has: clicks aimed at an **elevated (admin)** window are
+not delivered to a normal-integrity process, so it cannot see them. Tune it in
+`config.json`:
+
+```json
+"overlay": {
+  "mouseTrigger": { "enabled": true, "clicks": 3, "windowMs": 1200 }
+}
+```
+
+`windowMs` is how long the burst may take. Raise it if three clicks feel rushed.
+
+**Corner trigger** (off by default). Rest the pointer in a screen corner and the
+panel toggles. It only reads the pointer position, so no keyboard hook can stop
+it, and it needs no permission or elevation. Turn it on in
+`config.json` (or Settings → *Open config*):
+
+```json
+"overlay": {
+  "cornerTrigger": { "enabled": true, "corner": "top-left", "size": 4, "dwellMs": 400 }
+}
+```
+
+`corner` accepts `top-left`, `top-right`, `bottom-left`, `bottom-right`. It fires
+once per visit: move the pointer out and back to toggle again. Changes apply
+without a restart.
+
+**Not available:** extra mouse buttons (side buttons, wheel tilt) and
+modifier + click as a *global* shortcut. Neither exists at OS level. Both need a
+low-level mouse hook, which Windows does not deliver for input aimed at an
+elevated window, so it fails in exactly the environment where you want it.
+
 ## Manual-only answering
 
 CloudyAI **listens to the call and answers only when you press ⌘J**. There is no

@@ -1,7 +1,7 @@
 {
   "name": "cloudyai",
   "productName": "CloudyAI",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local-first AI copilot: on-device speech-to-text (CloudyVoice) + DeepSeek / opencode / commandcode answers in an overlay excluded from screen capture.",
   "main": "src/main/index.js",
   "author": "Tanay Mitra",
@@ -74,6 +74,10 @@
         {
           "from": "vendor/models",
           "to": "models"
+        },
+        {
+          "from": "vendor/mouse",
+          "to": "mouse"
         }
       ]
     },

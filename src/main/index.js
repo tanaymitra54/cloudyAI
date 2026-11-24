@@ -39,6 +39,7 @@ const hotkeys = require('./hotkeys');
 const { CloudyVoice } = require('./stt/CloudyVoice');
 const { CloudyEar } = require('./stt/CloudyEar');
 const { CloudyAudio } = require('./audio/CloudyAudio');
+const { MouseClicks } = require('./mouse/MouseClicks');
 const { AnswerEngine } = require('./llm');
 const { pickQuestion, shouldSkipAnswer, conversationFor } = require('./pick');
 const docs = require('./docs');
@@ -100,6 +101,26 @@ function resolveAudioBin() {
   }
 
   const dev = path.join(app.getAppPath(), 'native', 'CloudyAudio', '.build', 'release', 'CloudyAudio');
+  if (fs.existsSync(dev)) return dev;
+  return '';
+}
+
+/**
+ * Where the global mouse-click helper lives. Windows only: it installs a
+ * low-level mouse hook so three clicks anywhere can be recognised without a
+ * keyboard shortcut.
+ */
+function resolveMouseBin() {
+  if (!IS_WIN) return '';
+  const cfg = config.load().overlay?.mouseTrigger || {};
+  if (cfg.bin && fs.existsSync(cfg.bin)) return cfg.bin;
+
+  if (process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'mouse', 'CloudyMouse.exe');
+    if (fs.existsSync(bundled)) return bundled;
+  }
+
+  const dev = path.join(app.getAppPath(), 'vendor', 'mouse', 'CloudyMouse.exe');
   if (fs.existsSync(dev)) return dev;
   return '';
 }
@@ -220,6 +241,68 @@ function applyHotkeys() {
   return result;
 }
 
+/**
+ * The mouse-only fallback for summoning the panel. It only reads the pointer
+ * position, so a keyboard hook cannot see or block it. Configured in
+ * config.json under overlay.cornerTrigger; re-applied live like the hotkeys.
+ */
+function applyCornerTrigger() {
+  const opts = config.load().overlay?.cornerTrigger || {};
+  windows.stopCornerTrigger();
+  if (!opts.enabled) return;
+  windows.startCornerTrigger({
+    corner: opts.corner,
+    size: opts.size,
+    dwellMs: opts.dwellMs,
+    onTrigger: () => windows.toggleOverlay(),
+  });
+  console.log('[corner] toggle armed at', opts.corner || 'top-left');
+}
+
+/**
+ * Three clicks anywhere summons the panel. A mouse hook is the only way to see
+ * clicks that land on another app, which is why this uses a helper process.
+ * Off by default; see overlay.mouseTrigger in config.json.
+ */
+let mouseWatcher = null;
+let clickTimes = [];
+
+function applyMouseTrigger() {
+  const opts = config.load().overlay?.mouseTrigger || {};
+  if (mouseWatcher) {
+    mouseWatcher.stop();
+    mouseWatcher = null;
+  }
+  clickTimes = [];
+
+  if (!IS_WIN || !opts.enabled) return;
+
+  const bin = resolveMouseBin();
+  if (!bin) {
+    overlaySend(
+      'tanay:error',
+      'The click trigger is on, but CloudyMouse.exe is missing from this build.\nReinstall, or use the corner trigger / the panel buttons.'
+    );
+    return;
+  }
+
+  const needed = Math.min(5, Math.max(2, Number(opts.clicks) || 3));
+  const windowMs = Math.min(4000, Math.max(300, Number(opts.windowMs) || 1200));
+
+  mouseWatcher = new MouseClicks({ bin });
+  mouseWatcher.on('error', (message) => console.log('[mouse]', message));
+  mouseWatcher.on('click', () => {
+    const now = Date.now();
+    clickTimes.push(now);
+    while (clickTimes.length && now - clickTimes[0] > windowMs) clickTimes.shift();
+    if (clickTimes.length >= needed) {
+      clickTimes = [];
+      windows.toggleOverlay();
+    }
+  });
+  if (mouseWatcher.start()) console.log(`[mouse] ${needed} clicks within ${windowMs}ms toggles the panel`);
+}
+
 // Editing config.json while the app runs re-applies shortcuts immediately.
 let configWatchTimer = null;
 function watchConfig() {
@@ -232,6 +315,8 @@ function watchConfig() {
         try {
           config.reload();
           applyHotkeys();
+          applyCornerTrigger();
+          applyMouseTrigger();
           loadContextDocs({ quiet: true }).catch(() => {});
           overlaySend('tanay:meta', metaLine());
           windows.refreshTray(trayState());
@@ -1767,6 +1852,8 @@ if (!gotLock) {
 
     const cfg = config.load();
     applyHotkeys();
+    applyCornerTrigger();
+    applyMouseTrigger();
     watchConfig();
 
     if (cfg.autoStart !== false && !process.env.CLOUDY_NO_AUTOSTART) startListening();
@@ -1782,6 +1869,8 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  mouseWatcher?.stop();
+  windows.stopCornerTrigger();
   stopListening();
   shutdownVoices();
 });

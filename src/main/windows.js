@@ -254,6 +254,10 @@ function buildTray({ onToggle, onListen, onProvider, onQuit, isListening, provid
   if (tray) return tray;
   tray = new Tray(trayIcon());
   tray.setToolTip('CloudyAI');
+  // A left click toggles the panel. This is a mouse path to the app that no
+  // keyboard hook can see, so it keeps working in environments that swallow
+  // global hotkeys.
+  tray.on('click', () => toggleOverlay());
   refreshTray({ onToggle, onListen, onProvider, onQuit, isListening, provider });
   return tray;
 }
@@ -374,6 +378,70 @@ function getSystemCapture() {
   return systemCapture;
 }
 
+// ---------------------------------------------------------------- mouse corner
+// A passive trigger: watch where the pointer is and fire when it rests in a
+// screen corner. Reading the cursor position needs no permission, no hook and
+// no elevation, so nothing that filters the keyboard can stop it. Off by
+// default; enable it in config.json under overlay.cornerTrigger.
+let cornerTimer = null;
+
+function startCornerTrigger(options = {}) {
+  if (cornerTimer) return;
+  const corner = options.corner || 'top-left';
+  const size = Math.max(2, Number(options.size) || 4);
+  const dwellMs = Math.max(150, Number(options.dwellMs) || 400);
+  const onTrigger = typeof options.onTrigger === 'function' ? options.onTrigger : () => {};
+  let enteredAt = 0;
+  let armed = true;
+
+  cornerTimer = setInterval(() => {
+    if (!armed) return;
+    let point;
+    let area;
+    try {
+      point = screen.getCursorScreenPoint();
+      area = screen.getDisplayNearestPoint(point).workArea;
+    } catch {
+      return;
+    }
+
+    const left = point.x <= area.x + size;
+    const right = point.x >= area.x + area.width - size;
+    const top = point.y <= area.y + size;
+    const bottom = point.y >= area.y + area.height - size;
+    const inside =
+      (corner === 'top-left' && left && top) ||
+      (corner === 'top-right' && right && top) ||
+      (corner === 'bottom-left' && left && bottom) ||
+      (corner === 'bottom-right' && right && bottom);
+
+    if (!inside) {
+      enteredAt = 0;
+      armed = true;
+      return;
+    }
+    if (!enteredAt) {
+      enteredAt = Date.now();
+      return;
+    }
+    if (Date.now() - enteredAt >= dwellMs) {
+      // Fire once per visit: the pointer is still in the corner after the panel
+      // opens, and toggling in a loop would be maddening.
+      armed = false;
+      enteredAt = 0;
+      onTrigger();
+    }
+  }, 120);
+
+  // Never hold the event loop open just for a pointer poll.
+  cornerTimer.unref?.();
+}
+
+function stopCornerTrigger() {
+  if (cornerTimer) clearInterval(cornerTimer);
+  cornerTimer = null;
+}
+
 module.exports = {
   createOverlay,
   createCapture,
@@ -392,6 +460,8 @@ module.exports = {
   getSystemCapture,
   pinOnTop,
   toSymbols,
+  startCornerTrigger,
+  stopCornerTrigger,
   IS_MAC,
   IS_WIN,
 };
