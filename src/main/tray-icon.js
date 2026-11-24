@@ -4,7 +4,7 @@
  * 22×22 template-friendly tiger-head silhouette (black + alpha).
  * Ears + round head — readable in the macOS menu bar.
  */
-function trayTigerBitmap(size = 22) {
+function trayTigerBitmap(size = 22, rgb = [0, 0, 0]) {
   const buf = Buffer.alloc(size * size * 4);
   const cx = (size - 1) / 2;
   const cy = size * 0.58;
@@ -37,9 +37,9 @@ function trayTigerBitmap(size = 22) {
       const rightEar = inEar(x, y, cx + headRx * 0.72, earBaseY);
       const a = head || leftEar || rightEar ? 255 : 0;
       const i = (y * size + x) * 4;
-      buf[i] = 0;
-      buf[i + 1] = 0;
-      buf[i + 2] = 0;
+      buf[i] = rgb[0];
+      buf[i + 1] = rgb[1];
+      buf[i + 2] = rgb[2];
       buf[i + 3] = a;
     }
   }

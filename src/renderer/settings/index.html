@@ -27,17 +27,17 @@
         </select>
       </label>
       <label class="row">
-        <span>Audio source</span>
-        <select id="audioSource">
-          <option value="system">System audio — the other participant (recommended)</option>
-          <option value="mic">Microphone</option>
-        </select>
+        <span>Audio sources</span>
+        <span class="source-list">
+          <label class="check"><input type="checkbox" id="captureSystem" /> Other side — system audio (the call output)</label>
+          <label class="check"><input type="checkbox" id="captureMic" /> My voice — microphone</label>
+        </span>
       </label>
       <label class="row">
         <span>Whisper model</span>
         <select id="sttModel"></select>
       </label>
-      <p class="hint">System audio captures the call digitally, so your own voice is never transcribed. Parakeet keeps the model loaded and decodes a question in about 0.2 s.</p>
+      <p class="hint">Both sources can run at once: the conversation is labelled <b>them</b> (left) and <b>you</b> (right). System audio needs Screen &amp; System Audio Recording permission; your voice needs Microphone permission. Parakeet keeps the model loaded and decodes a question in about 0.2 s.</p>
     </section>
 
     <section>

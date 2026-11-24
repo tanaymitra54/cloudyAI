@@ -18,18 +18,59 @@ local or bring-your-own-key equivalents.
 | Telemetry | `clauseai.in/api` analytics + diagnostics | none |
 | Overlay | `setContentProtection` + screen-saver level | same technique |
 | Questions | speech only | speech, typed text, or a **screenshot** of the screen |
-| Audio | system loopback + mic | **system audio only** (ScreenCaptureKit), mic optional and off |
+| Audio | system loopback + mic | **both at once** — system audio (ScreenCaptureKit) + microphone, speaker-labelled |
 
 ## Requirements
 
-- macOS on Apple Silicon
-- Node.js 20+
+**macOS (Apple Silicon)**
+- macOS on Apple Silicon, Node.js 20+
 - Swift 6.2+ (Command Line Tools are enough) for the two helpers:
   `npm run build:ear` and `npm run build:audio`
 - Optional fallback: `brew install whisper-cpp` + `npm run get-model`
-- A DeepSeek or Command Code API key, or an `opencode` / `commandcode` install
+
+**Windows 10 / 11 (x64)**
+- Nothing to install. The installer bundles Electron, whisper.cpp and the
+  speech model, so it runs on a plain Windows box.
+
+Either way you need a DeepSeek or Command Code API key, or an `opencode` /
+`commandcode` install for answers.
 
 ## Install
+
+### Windows
+
+Download `CloudyAI-<version>-Setup.exe` from
+[Releases](https://github.com/tanaymitra54/cloudyAI/releases) and run it.
+`CloudyAI-<version>-Portable.exe` runs without installing anything.
+
+The installer is per-user by default, so it needs no administrator rights. It
+adds a Start-menu entry, a desktop shortcut, and a tray icon. Windows SmartScreen
+may warn about an unsigned publisher on first run: *More info → Run anyway*.
+
+What works on Windows:
+
+| | Windows |
+|---|---|
+| Overlay, screenshots, typed questions, session docs | yes |
+| Speech to text | whisper.cpp, bundled (`ggml-base.en.bin`) |
+| System audio (the other side) | Chromium loopback, no driver needed |
+| Microphone (your voice) | yes |
+| Hidden from screen shares | yes (`WDA_EXCLUDEFROMCAPTURE`) |
+
+To build it yourself on Windows, or to build on any machine:
+
+```powershell
+npm ci
+npm run build:whisper:win      # vendor/whisper/whisper-cli.exe (needs CMake + MSVC)
+node scripts/get-model.js base --out vendor/models
+npm run dist:win               # dist/CloudyAI-<version>-Setup.exe + Portable.exe
+```
+
+The GitHub Action `.github/workflows/windows-release.yml` does exactly this on
+`windows-latest` and attaches both files to the release when a `v*` tag is
+pushed.
+
+### macOS
 
 ```bash
 npm install
@@ -86,9 +127,11 @@ Changes apply immediately — no restart.
   most three bullets before it. Other languages only if you type that request.
   The overlay colours the block (keywords, types, functions, strings, numbers,
   comments) and labels it **C++**.
-- **Engine / audio source** — Parakeet on the Neural Engine (default) or
-  whisper.cpp; system audio (default) or the microphone. Switching restarts the
-  recogniser live.
+- **Engine / audio sources** — Parakeet on the Neural Engine (default) or
+  whisper.cpp; **system audio** and **microphone** are independent checkboxes and
+  can both be on. Both sides of the call are transcribed at the same time, each
+  with its own voice-activity detection and speaker label. Switching restarts
+  the recognisers live.
 - **Provider / model** — switches the answer backend live.
 
 Shortcuts can also be edited by hand in `config.json`; the file is watched, so
@@ -100,6 +143,8 @@ thing.
 "hotkeys": {
   "answer": "CommandOrControl+J",              // answer the last question
   "answerLastUtterance": "CommandOrControl+Shift+Enter",
+  "screenshot": "CommandOrControl+Shift+S",    // queue a screenshot
+  "send": "CommandOrControl+Enter",            // send text + screenshots
   "toggleOverlay": "CommandOrControl+Shift+A",
   "toggleListening": "CommandOrControl+Shift+L",
   "clear": "CommandOrControl+Shift+R"
@@ -111,16 +156,23 @@ thing.
 | Keys | Action |
 |---|---|
 | `⌘J` | **answer the last question now** (the main trigger) |
+| `⌘⇧S` | screenshot the screen — queues a preview |
+| `⌘↵` | send the typed question + queued screenshots |
 | `⌘⇧A` | show / hide the overlay |
 | `⌘⇧L` | start / stop listening |
 | `⌘⇧R` | clear the transcript |
 | `⌘⇧↵` | answer the last thing said, no question check |
 
+The panel has two panes: the **live conversation** on the left, as chat bubbles
+(the other participant on the left, your own voice on the right), and the
+**answer** to the last detected question on the right.
+
 ## Manual-only answering
 
 CloudyAI **listens to the call and answers only when you press ⌘J**. There is no
-auto-answer mode: nothing is ever sent to a model without a keypress. Only
-system audio is captured, so your own voice is not in the transcript.
+auto-answer mode: nothing is ever sent to a model without a keypress. Both the
+call output (the other participant) and your own microphone are transcribed, and
+each line is labelled in the conversation pane.
 
 Pressing ⌘J uses the newest utterance:
 
@@ -144,15 +196,17 @@ request — it would throw away tokens already on screen.
 ## How the pipeline works
 
 ```
-system audio ── ScreenCaptureKit helper (16 kHz mono) ──► CloudyVoice ── energy VAD ──► utterance ──► CloudyEar (Parakeet, ANE) ──► text
-        │                                                                                          └── whisper-cli fallback
-        │                                                                                          └── live caption (tail 4.5 s)
+system audio ── ScreenCaptureKit helper (16 kHz) ──┐
+                                                    ├─► two CloudyVoice VADs ──► utterances ──► shared CloudyEar (Parakeet, ANE) ──► text
+microphone ── capture renderer + AudioWorklet ─────┘                                    └── whisper-cli fallback
+                                                                                        └── live caption per speaker
         ▼
-  question heuristic ──► DeepSeek / opencode / commandcode ──► streaming answer ──► overlay```
+  speaker label ("them"/"me") ──► chat transcript ──► ⌘J ──► DeepSeek / opencode / commandcode ──► streaming answer ──► right pane
+```
 
-- Only the **system output** is captured. Your microphone is off by default, so
-  your own voice is never transcribed and the other participant is captured
-  digitally instead of through the speakers.
+- **Both sides are captured.** The system loopback gives the other participant
+  digitally; the microphone gives your voice. Each has its own VAD and speaker
+  label, and both share one Parakeet model so memory does not double.
 - `silenceMs` (500 ms) closes an utterance; `maxSegmentMs` (15 s) forces a cut on
   continuous speech. The endpointing is deliberately shorter than the old
   700 ms: system audio is clean, and the final decode is ~140 ms.
@@ -511,8 +565,9 @@ is ad-hoc signed, so macOS asks again after every rebuild.
 - **A rebuild needs the permission granted again** (ad-hoc signing has no stable
   team identity). Delete the old CloudyAI row with **−** if a stale, generic-icon
   row is left behind, then grant the new prompt once.
-- **The microphone is off by default.** Enable Settings → Audio source →
-  Microphone only if you want to transcribe people in the room.
+- **Both sources are on by default.** The system loopback transcribes the other
+  participant; the microphone transcribes you. Each can be turned off in
+  Settings → Audio sources.
 - The overlay is excluded from screenshots and live ScreenCaptureKit captures on
   macOS 27 (verified with both a one-shot SCK screenshot and a live SCStream).
   Content protection is still best-effort on older macOS versions.
@@ -537,7 +592,10 @@ scripts/build-audio.sh       builds the system-audio helper
 src/main/llm/*               DeepSeek SSE + CLI backends
 src/main/prompts.js          prompt profiles
 src/renderer/overlay/*       the panel
-src/renderer/capture/*       microphone + AudioWorklet (optional source)
+src/renderer/capture/*       microphone + Windows loopback + AudioWorklet
+scripts/build-whisper-win.ps1  CMake build of whisper-cli.exe for the installer
+scripts/get-model.js         cross-platform GGML model download
+.github/workflows/windows-release.yml  builds + publishes the Windows release
 ```
 
 ## Legal note

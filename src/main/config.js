@@ -4,6 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 
+// Parakeet runs on the Apple Neural Engine through a Swift helper, so it is
+// macOS-only. Every other platform drives whisper.cpp, which is bundled with
+// the Windows installer and found on PATH elsewhere.
+const IS_MAC = process.platform === 'darwin';
+
 const DEFAULTS = {
   provider: 'opencode-go', // opencode-go | commandcode-api | deepseek | opencode | commandcode
   opencodeGo: {
@@ -48,10 +53,17 @@ const DEFAULTS = {
     // highest recall. Runs on the Neural Engine, keeps the model in memory, and
     // decodes a 3.4 s question in ~110 ms (vs ~520 ms for whisper base.en, which
     // also reloads the model every time). First use downloads ~464 MB once.
-    // 'whisper': the previous whisper.cpp CLI path.
-    engine: 'parakeet',
-    // 'system': capture the other participant through the system audio helper
-    // (screen recording permission). 'mic': the microphone path, off by default.
+    // 'whisper': the previous whisper.cpp CLI path. On Windows this is the
+    // only engine and its binary ships inside the installer.
+    engine: IS_MAC ? 'parakeet' : 'whisper',
+    // Both sides of the call are transcribed at the same time, each with its
+    // own VAD and its own speaker label. Turn either off if you only need one.
+    //   captureSystem: the other participant, via the system-audio helper
+    //                  (needs Screen & System Audio Recording permission)
+    //   captureMic:    your own voice, via the microphone
+    captureSystem: true,
+    captureMic: true,
+    // Legacy single-source switch, kept so an old config.json still loads.
     source: 'system',
     parakeetBin: '', // empty = bundled helper, or native/CloudyEar/.build/release/CloudyEar in dev
     parakeetModelsDir: '', // empty = ~/Library/Application Support/FluidAudio/Models
@@ -74,8 +86,8 @@ const DEFAULTS = {
       'Job interview conversation. Technical vocabulary: JavaScript, TypeScript, Python, SQL, API, REST, GraphQL, Kubernetes, Docker, microservices, latency, throughput, caching, Redis, Postgres, index, hash map, recursion, dynamic programming, time complexity, Big O, system design, load balancer, CI/CD, AWS.',
   },
   overlay: {
-    width: 720,
-    height: 620,
+    width: 1020,
+    height: 680,
     opacity: 0.96,
   },
   profile: 'interview',
@@ -88,6 +100,8 @@ const DEFAULTS = {
   hotkeys: {
     answer: 'CommandOrControl+J', // answer the last question
     answerLastUtterance: 'CommandOrControl+Shift+Enter', // answer whatever was said last
+    screenshot: 'CommandOrControl+Shift+S', // queue a screenshot of the active screen
+    send: 'CommandOrControl+Enter', // send the typed question + queued screenshots
     toggleOverlay: 'CommandOrControl+Shift+A',
     toggleListening: 'CommandOrControl+Shift+L',
     clear: 'CommandOrControl+Shift+R',
@@ -180,6 +194,9 @@ function load() {
 
   rawDisk = onDisk;
   cache = applyEnv(deepMerge(DEFAULTS, onDisk));
+  // A config.json copied over from a Mac still says "parakeet". That helper
+  // does not exist here, so fall back quietly instead of erroring on every start.
+  if (!IS_MAC && cache.cloudyvoice.engine === 'parakeet') cache.cloudyvoice.engine = 'whisper';
   return cache;
 }
 
@@ -218,6 +235,11 @@ function findModel(fileName) {
   const cache = path.join(app.getPath('home'), '.cache', 'cloudyvoice', fileName);
   if (fs.existsSync(local)) return local;
   if (fs.existsSync(cache)) return cache;
+  // The model shipped inside the installer (Windows) or the .app bundle.
+  if (process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'models', fileName);
+    if (fs.existsSync(bundled)) return bundled;
+  }
   return local;
 }
 
@@ -244,7 +266,8 @@ function listModels() {
   const dirs = [
     path.join(app.getPath('userData'), 'models'),
     path.join(app.getPath('home'), '.cache', 'cloudyvoice'),
-  ];
+    process.resourcesPath ? path.join(process.resourcesPath, 'models') : '',
+  ].filter(Boolean);
   const seen = new Map();
   for (const dir of dirs) {
     try {

@@ -3,18 +3,31 @@
 const ACTIONS = [
   ['answer', 'Answer last question'],
   ['answerLastUtterance', 'Answer without question check'],
+  ['screenshot', 'Screenshot the active screen'],
+  ['send', 'Send text + screenshots'],
   ['toggleListening', 'Start / stop listening'],
   ['toggleOverlay', 'Show / hide panel'],
   ['clear', 'Clear transcript'],
 ];
 
-const MOD_SYMBOLS = [
-  ['CommandOrControl', '⌘'],
-  ['Command', '⌘'],
-  ['Control', '⌃'],
-  ['Alt', '⌥'],
-  ['Shift', '⇧'],
-];
+// macOS draws shortcuts as symbols; Windows and Linux spell the modifiers out.
+const IS_MAC = /Mac/i.test(navigator.userAgent);
+
+const MOD_SYMBOLS = IS_MAC
+  ? [
+      ['CommandOrControl', '⌘'],
+      ['Command', '⌘'],
+      ['Control', '⌃'],
+      ['Alt', '⌥'],
+      ['Shift', '⇧'],
+    ]
+  : [
+      ['CommandOrControl', 'Ctrl'],
+      ['Command', 'Ctrl'],
+      ['Control', 'Ctrl'],
+      ['Alt', 'Alt'],
+      ['Shift', 'Shift'],
+    ];
 
 const shortcutsEl = document.getElementById('shortcuts');
 const providerEl = document.getElementById('provider');
@@ -25,7 +38,8 @@ const apiKeyEl = document.getElementById('apiKey');
 const keyHintEl = document.getElementById('keyHint');
 const sttModelEl = document.getElementById('sttModel');
 const sttEngineEl = document.getElementById('sttEngine');
-const audioSourceEl = document.getElementById('audioSource');
+const captureSystemEl = document.getElementById('captureSystem');
+const captureMicEl = document.getElementById('captureMic');
 const sessionPromptEl = document.getElementById('sessionPrompt');
 const jdTextEl = document.getElementById('jdText');
 const resumeFileEl = document.getElementById('resumeFile');
@@ -121,7 +135,7 @@ function pretty(accelerator) {
       const hit = MOD_SYMBOLS.find(([name]) => name.toLowerCase() === part.toLowerCase());
       return hit ? hit[1] : part.replace('Enter', '↵');
     })
-    .join('');
+    .join(IS_MAC ? '' : '+');
 }
 
 function renderShortcuts() {
@@ -188,7 +202,9 @@ window.addEventListener('keydown', (event) => {
   const accelerator = acceleratorFromEvent(event);
   if (!accelerator) {
     statusEl.className = 'status error';
-    statusEl.textContent = 'Use at least one modifier (⌘, ⌃, ⌥).';
+    statusEl.textContent = IS_MAC
+      ? 'Use at least one modifier (⌘, ⌃, ⌥).'
+      : 'Use at least one modifier (Ctrl, Alt, Shift).';
     return;
   }
 
@@ -341,7 +357,12 @@ document.getElementById('save').addEventListener('click', async () => {
     provider: state.provider,
     models,
     visionModel: visionModelEl.value,
-    transcription: { engine: sttEngineEl.value, source: audioSourceEl.value, modelPath: sttModelEl.value },
+    transcription: {
+      engine: sttEngineEl.value,
+      captureSystem: captureSystemEl.checked,
+      captureMic: captureMicEl.checked,
+      modelPath: sttModelEl.value,
+    },
     sessionPrompt: sessionPromptEl.value,
     jobDescriptionText: jdTextEl.value,
     // An attached file is never overwritten by the (hidden) paste box.
@@ -385,8 +406,15 @@ document.getElementById('save').addEventListener('click', async () => {
   renderDocuments();
 
   // Populate the recogniser list from the models actually present on disk.
-  sttEngineEl.value = loaded.transcription?.engine === 'whisper' ? 'whisper' : 'parakeet';
-  audioSourceEl.value = loaded.transcription?.source === 'mic' ? 'mic' : 'system';
+  // Parakeet is a macOS/Neural Engine helper, so it is not offered elsewhere.
+  if (!IS_MAC) {
+    sttEngineEl.querySelector('option[value="parakeet"]')?.remove();
+    sttEngineEl.value = 'whisper';
+  } else {
+    sttEngineEl.value = loaded.transcription?.engine === 'whisper' ? 'whisper' : 'parakeet';
+  }
+  captureSystemEl.checked = loaded.transcription?.captureSystem !== false;
+  captureMicEl.checked = loaded.transcription?.captureMic !== false;
   const models = loaded.transcription?.available || [];
   sttModelEl.innerHTML = models
     .map((m) => `<option value="${m.file}">${m.name.replace(/^ggml-|\.bin$/g, '')}</option>`)

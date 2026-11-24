@@ -44,6 +44,27 @@ section {
 .row.check { align-items: flex-start; gap: 8px; }
 .row.check span { flex: 1; color: #b9bac1; line-height: 1.4; }
 
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.source-list .check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #b9bac1;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.source-list input[type='checkbox'] {
+  accent-color: #7ee2a8;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
 select,
 input[type='text'],
 input[type='password'],

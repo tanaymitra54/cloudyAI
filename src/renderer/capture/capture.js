@@ -18,7 +18,10 @@ async function requestStream() {
   const constraints = {
     audio: {
       channelCount: 1,
-      echoCancellation: false,
+      // The microphone leg only needs YOUR voice. Echo cancellation keeps the
+      // meeting output (already captured digitally by the system-audio helper)
+      // from being transcribed a second time through the speakers.
+      echoCancellation: true,
       noiseSuppression: false,
       autoGainControl: true,
     },
@@ -68,7 +71,9 @@ async function start() {
     console.log('[capture] error:', err.name, '-', err.message);
     const message =
       err.name === 'NotAllowedError'
-        ? 'Permission denied. Enable CloudyAI in System Settings → Privacy & Security → Microphone.'
+        ? /Mac/i.test(navigator.userAgent)
+          ? 'Permission denied. Enable CloudyAI in System Settings → Privacy & Security → Microphone.'
+          : 'Permission denied. Open Settings → Privacy → Microphone and let desktop apps use the microphone.'
         : `${err.name}: ${err.message || err}`;
     throw new Error(message);
   }

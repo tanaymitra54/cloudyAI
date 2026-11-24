@@ -1,7 +1,7 @@
 {
   "name": "cloudyai",
   "productName": "CloudyAI",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-first AI copilot: on-device speech-to-text (CloudyVoice) + DeepSeek / opencode / commandcode answers in an overlay excluded from screen capture.",
   "main": "src/main/index.js",
   "author": "Tanay Mitra",
@@ -16,9 +16,11 @@
     "test:e2e": "node test/e2e.test.js",
     "bench": "node test/opencodego.bench.js",
     "build:ear": "bash scripts/build-ear.sh",
-    "get-model": "bash scripts/get-model.sh",
+    "build:audio": "bash scripts/build-audio.sh",
+    "build:whisper:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-whisper-win.ps1",
+    "get-model": "node scripts/get-model.js",
     "dist": "npm run build:ear && npm run build:audio && electron-builder --mac --arm64",
-    "build:audio": "bash scripts/build-audio.sh"
+    "dist:win": "electron-builder --win --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^33.4.11",
@@ -30,33 +32,70 @@
     "files": [
       "src/**/*",
       "node_modules/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "afterPack": "scripts/after-pack.js",
-    "extraResources": [
-      {
-        "from": "native/CloudyEar/.build/release/CloudyEar",
-        "to": "cloudy-ear"
-      },
-      {
-        "from": "native/CloudyAudio/.build/release/CloudyAudio",
-        "to": "cloudy-audio"
-      }
-    ],
     "mac": {
       "category": "public.app-category.productivity",
       "identity": null,
       "target": [
         "dmg"
       ],
+      "extraResources": [
+        {
+          "from": "native/CloudyEar/.build/release/CloudyEar",
+          "to": "cloudy-ear"
+        },
+        {
+          "from": "native/CloudyAudio/.build/release/CloudyAudio",
+          "to": "cloudy-audio"
+        }
+      ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "CloudyAI listens to the meeting audio so it can transcribe it on-device with CloudyVoice.",
         "NSScreenCaptureUsageDescription": "CloudyAI needs screen access to capture system audio from calls.",
         "LSUIElement": true
       }
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "requestedExecutionLevel": "asInvoker",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/whisper",
+          "to": "whisper"
+        },
+        {
+          "from": "vendor/models",
+          "to": "models"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CloudyAI",
+      "uninstallDisplayName": "CloudyAI",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "${productName}-${version}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-Portable.${ext}"
     }
   },
   "dependencies": {
     "pdf-parse": "^1.1.1"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
   }
 }

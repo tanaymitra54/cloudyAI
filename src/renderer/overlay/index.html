@@ -12,33 +12,50 @@
         <span class="label" id="status">idle</span>
         <span class="grow"></span>
         <button id="listen" title="Start / stop listening (⌘⇧L)">listen</button>
-        <button id="shot" title="Capture a screenshot — adds a preview, press ↵ to send">📷</button>
-        <button id="clear" title="Clear (⌘⇧R)">clear</button>
+        <button id="shot" title="Screenshot of the active screen — queues a preview (⌘⇧S)">📷</button>
+        <button id="clear" title="Clear conversation (⌘⇧R)">clear</button>
         <button id="settings" title="Settings">⚙</button>
-        <button id="hide" title="Hide overlay (⌘⇧H)">×</button>
+        <button id="hide" title="Hide overlay (⌘⇧A)">×</button>
       </header>
 
-      <div class="transcript-wrap">
-        <div class="transcript" id="transcript"></div>
-        <div class="live" id="caption"></div>
+      <div class="panes">
+        <!-- Left: the live conversation, chat-style. The other side is on the
+             left, you are on the right, exactly like a messaging app. -->
+        <section class="convo">
+          <div class="pane-head">
+            <span>Live conversation</span>
+            <span class="legend"><i class="sw them"></i>them <i class="sw me"></i>you</span>
+          </div>
+          <div class="transcript" id="transcript"></div>
+          <div class="live" id="caption" hidden></div>
+        </section>
+
+        <!-- Right: the answer to the question that was just detected. -->
+        <section class="answers">
+          <div class="pane-head">
+            <span>Answer</span>
+            <span class="legend" id="answerFor"></span>
+          </div>
+          <div class="answer" id="answer">
+            <p class="hint">Waiting for a question…</p>
+          </div>
+          <div class="actions" id="actions" hidden>
+            <button id="micSettings">Open microphone settings</button>
+            <button id="screenSettings">Open screen recording settings</button>
+          </div>
+          <div class="shots" id="shots" hidden></div>
+          <div class="composer">
+            <textarea
+              id="prompt"
+              rows="1"
+              autocomplete="off"
+              placeholder="Type a question — ⏎ or ⌘↵ to send (⌘⇧S for a screenshot)"
+            ></textarea>
+            <button id="send" title="Send text + screenshots (⌘↵)">↵</button>
+          </div>
+        </section>
       </div>
-      <div class="answer" id="answer">
-        <p class="hint">Waiting for a question…</p>
-      </div>
-      <div class="actions" id="actions" hidden>
-        <button id="micSettings">Open microphone settings</button>
-        <button id="screenSettings">Open screen recording settings</button>
-      </div>
-      <div class="shots" id="shots" hidden></div>
-      <div class="composer">
-        <textarea
-          id="prompt"
-          rows="1"
-          autocomplete="off"
-          placeholder="Type a question or prompt — ⏎ to send, ⇧⏎ for a new line"
-        ></textarea>
-        <button id="send" title="Send (⏎)">↵</button>
-      </div>
+
       <footer class="foot"><span id="meta"></span></footer>
     </div>
     <div class="lightbox" id="lightbox" hidden>

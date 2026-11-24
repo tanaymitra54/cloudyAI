@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Only plain data crosses the bridge: no ipcRenderer object, no fs, no shell.
 contextBridge.exposeInMainWorld('tanay', {
+  platform: process.platform,
   onCaption: (cb) => ipcRenderer.on('tanay:caption', (_e, text) => cb(text)),
   onTranscript: (cb) => ipcRenderer.on('tanay:transcript', (_e, text) => cb(text)),
   onTranscriptReset: (cb) => ipcRenderer.on('tanay:transcript-reset', () => cb()),
@@ -13,6 +14,8 @@ contextBridge.exposeInMainWorld('tanay', {
   onStatus: (cb) => ipcRenderer.on('tanay:status', (_e, s) => cb(s)),
   onError: (cb) => ipcRenderer.on('tanay:error', (_e, message) => cb(message)),
   onMeta: (cb) => ipcRenderer.on('tanay:meta', (_e, meta) => cb(meta)),
+  onShot: (cb) => ipcRenderer.on('tanay:shot', (_e, payload) => cb(payload)),
+  onSendRequest: (cb) => ipcRenderer.on('tanay:send', () => cb()),
   listen: () => ipcRenderer.send('tanay:listen-toggle'),
   askText: (text, images) => ipcRenderer.send('tanay:ask-text', text, images),
   capture: () => ipcRenderer.invoke('tanay:capture'),

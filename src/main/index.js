@@ -3,7 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { app, ipcMain, globalShortcut, systemPreferences, shell, desktopCapturer, screen, dialog } = require('electron');
+const { app, ipcMain, globalShortcut, systemPreferences, shell, desktopCapturer, screen, dialog, session } = require('electron');
+
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
+// Windows gets system audio from Chromium's own loopback (getDisplayMedia with
+// audio: 'loopback'); macOS gets it from the ScreenCaptureKit helper.
+const LOOPBACK_IN_RENDERER = IS_WIN;
 
 // ---------------------------------------------------------------- env loading
 // No dotenv dependency: read KEY=VALUE lines from .env next to package.json.
@@ -31,19 +37,38 @@ const windows = require('./windows');
 const prompts = require('./prompts');
 const hotkeys = require('./hotkeys');
 const { CloudyVoice } = require('./stt/CloudyVoice');
+const { CloudyEar } = require('./stt/CloudyEar');
 const { CloudyAudio } = require('./audio/CloudyAudio');
 const { AnswerEngine } = require('./llm');
 const { pickQuestion, shouldSkipAnswer, conversationFor } = require('./pick');
 const docs = require('./docs');
 
 // ------------------------------------------------------------- resolve binaries
-function resolveBin(bin, knownDirs = ['/opt/homebrew/bin', '/usr/local/bin']) {
-  if (path.isAbsolute(bin)) return bin;
-  for (const dir of knownDirs) {
-    const candidate = path.join(dir, bin);
-    if (fs.existsSync(candidate)) return candidate;
+function defaultBinDirs() {
+  if (IS_WIN) {
+    return [
+      process.resourcesPath ? path.join(process.resourcesPath, 'whisper') : '',
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'whisper.cpp') : '',
+      'C:\\Program Files\\whisper.cpp',
+    ].filter(Boolean);
   }
-  return bin;
+  if (IS_MAC) return ['/opt/homebrew/bin', '/usr/local/bin'];
+  return ['/usr/local/bin', '/usr/bin'];
+}
+
+function resolveBin(bin, knownDirs = defaultBinDirs()) {
+  if (!bin) return bin;
+  if (path.isAbsolute(bin)) return bin;
+  // On Windows the executable carries .exe even though the config says
+  // "whisper-cli"; try the suffixed name first, then the bare one.
+  const names = IS_WIN && !path.extname(bin) ? [`${bin}.exe`, bin] : [bin];
+  for (const dir of knownDirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return bin; // let the OS resolve it on PATH
 }
 
 /**
@@ -82,7 +107,14 @@ function resolveAudioBin() {
 // ------------------------------------------------------------ question detection
 const { stripFiller } = require('./detection');
 // ------------------------------------------------------------------- app state
-let voice = null;
+// Two recognisers run side by side: `them` reads the system loopback and `me`
+// reads the microphone. They share one Parakeet model (see startListening).
+let themVoice = null;
+let meVoice = null;
+let sharedEar = null;
+// The recogniser that most recently produced speech. ⌘J answers the newest
+// utterance regardless of which side of the call it came from.
+let lastActiveVoice = null;
 let systemAudio = null;
 let engine = null;
 let listening = false;
@@ -95,6 +127,25 @@ let starting = false; // guards against overlapping getUserMedia requests
 function overlaySend(channel, payload) {
   const win = windows.getOverlay();
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+/** Every running recogniser, labelled by speaker. */
+function allVoices() {
+  return [themVoice, meVoice].filter(Boolean);
+}
+
+/** The source that spoke most recently, or null when nobody is running. */
+function activeVoice() {
+  let best = null;
+  let bestAt = 0;
+  for (const candidate of allVoices()) {
+    const at = candidate.activityAt;
+    if (at >= bestAt) {
+      best = candidate;
+      bestAt = at;
+    }
+  }
+  return best || lastActiveVoice || null;
 }
 
 // provider id -> config section (they differ in case for opencode-go)
@@ -113,11 +164,17 @@ const KEY_SECTIONS = {
   deepseek: 'deepseek',
 };
 
+/** The configured key for an action, drawn the way this platform writes keys. */
+function hotkeyLabel(action) {
+  const cfg = config.load();
+  return windows.toSymbols(cfg.hotkeys?.[action]) || '';
+}
+
 function metaLine() {
   const cfg = config.load();
   const section = cfg[SECTIONS[cfg.provider] || cfg.provider] || {};
   const model = section.model || cfg.provider;
-  const mode = '⌘J to answer';
+  const mode = `${hotkeyLabel('answer') || 'answer'} to answer`;
   return `${cfg.provider} · ${model} · ${mode} · ${turns.length} turns`;
 }
 
@@ -131,8 +188,8 @@ function clearSession() {
   lastAnswered = { text: '', at: 0, utteranceId: null };
   engine?.cancel();
   // Drop the in-flight utterance too, not just the visible text.
-  voice?.clear();
-  overlaySend('tanay:caption', '');
+  for (const v of allVoices()) v.clear();
+  overlaySend('tanay:caption', { text: '', speaker: 'them' });
   overlaySend('tanay:transcript-reset');
   overlaySend('tanay:answer-start');
   overlaySend('tanay:answer-end');
@@ -146,6 +203,8 @@ function applyHotkeys() {
   const result = hotkeys.apply(cfg.hotkeys, {
     answer: () => answerNow(),
     answerLastUtterance: () => ask(),
+    screenshot: () => screenshotHotkey(),
+    send: () => sendHotkey(),
     toggleOverlay: () => windows.toggleOverlay(),
     toggleListening: () => toggleListening(),
     clear: () => clearSession(),
@@ -298,7 +357,9 @@ async function captureScreen() {
   const source = sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
   if (!source || source.thumbnail.isEmpty()) {
     throw new Error(
-      'Could not read the screen.\nGrant Screen Recording to CloudyAI in System Settings → Privacy & Security.'
+      IS_MAC
+        ? 'Could not read the screen.\nGrant Screen Recording to CloudyAI in System Settings → Privacy & Security.'
+        : 'Could not read the screen.\nClose any app that may be blocking screen capture and try again.'
     );
   }
   return source.thumbnail.toDataURL();
@@ -334,16 +395,44 @@ async function captureScreenshot() {
   }
 }
 
+/**
+ * Global shortcut: capture a screenshot and put it in the composer's queue.
+ * It stays a preview until Send (⌘↵) — the same rule as the camera button, so
+ * a stray shortcut costs nothing and is never sent to the model by accident.
+ */
+async function screenshotHotkey() {
+  const win = windows.getOverlay();
+  if (win && !win.isDestroyed() && !win.isVisible()) {
+    win.showInactive();
+    windows.pinOnTop(win);
+  }
+  const result = await captureScreenshot();
+  if (result.ok) overlaySend('tanay:shot', { dataUrl: result.dataUrl });
+}
+
+/** Global shortcut: send whatever is in the composer (text + screenshots). */
+function sendHotkey() {
+  const win = windows.getOverlay();
+  if (win && !win.isDestroyed() && !win.isVisible()) {
+    win.showInactive();
+    windows.pinOnTop(win);
+  }
+  overlaySend('tanay:send');
+}
+
 function onFinalTranscript(text, meta = {}) {
+  const speaker = meta.speaker === 'me' ? 'me' : 'them';
   turns.push({
     text,
     at: meta.speechEndAt || Date.now(),
     utteranceId: meta.utteranceId ?? null,
+    speaker,
   });
   if (turns.length > 200) turns = turns.slice(-200);
 
-  overlaySend('tanay:caption', ''); // the live line is now committed below
-  overlaySend('tanay:transcript', text);
+  // The live line is now committed as a chat bubble below.
+  overlaySend('tanay:caption', { text: '', speaker });
+  overlaySend('tanay:transcript', { text, speaker });
   pushMeta();
 }
 
@@ -353,18 +442,21 @@ function onFinalTranscript(text, meta = {}) {
  * better-scoring older one.
  */
 function currentPick() {
+  // Only the source that is actually talking (or just finished) can have text
+  // in flight. Reading both at once would splice "them" and "me" together.
+  const live = activeVoice();
   const picked = pickQuestion({
     turns,
-    partial: (voice?.partialText || '').trim(),
-    pendingText: (voice?.pendingText || '').trim(),
-    speaking: Boolean(voice?.speaking),
+    partial: (live?.partialText || '').trim(),
+    pendingText: (live?.pendingText || '').trim(),
+    speaking: Boolean(live?.speaking),
     now: Date.now(),
     maxAgeMs: 20000,
   });
   // In-flight text has no id in the picker; attach the live utterance so the
   // duplicate-answer guard can see it. While speaking, the live utterance is
   // the next id, not the one that just closed.
-  const liveId = voice?.speaking ? (voice.utteranceId || 0) + 1 : voice?.utteranceId;
+  const liveId = live?.speaking ? (live.utteranceId || 0) + 1 : live?.utteranceId;
   if (picked && picked.source !== 'turn' && liveId) {
     picked.utteranceId = liveId;
   }
@@ -373,19 +465,24 @@ function currentPick() {
 
 /** Wait for the decode that is already running, but never longer than timeoutMs. */
 function waitForFinal(timeoutMs) {
+  const waiting = allVoices().filter((v) => v.finalizing);
+  if (!waiting.length) return Promise.resolve();
   return new Promise((resolve) => {
-    if (!voice) return resolve();
     let settled = false;
-    const onFinal = () => finish();
+    const listeners = [];
     const timer = setTimeout(finish, timeoutMs);
     function finish() {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      voice.removeListener('final', onFinal);
+      for (const [v, fn] of listeners) v.removeListener('final', fn);
       resolve();
     }
-    voice.once('final', onFinal);
+    for (const v of waiting) {
+      const onFinal = () => finish();
+      listeners.push([v, onFinal]);
+      v.once('final', onFinal);
+    }
   });
 }
 
@@ -395,7 +492,7 @@ async function answerNow() {
 
   // The utterance just closed and its decode is in flight. Wait for it rather
   // than falling back to the previous question.
-  if (!picked?.text && voice?.finalizing) {
+  if (!picked?.text && allVoices().some((v) => v.finalizing)) {
     await waitForFinal(700);
     picked = currentPick();
   }
@@ -408,7 +505,7 @@ async function answerNow() {
   const question = pickedText && stripFiller(pickedText) ? pickedText : conversation[conversation.length - 1] || '';
 
   if (!question) {
-    overlaySend('tanay:error', 'Nothing heard yet — start listening first (⌘⇧L).');
+    overlaySend('tanay:error', `Nothing heard yet — start listening first (${hotkeyLabel('toggleListening')}).`);
     overlaySend('tanay:status', listening ? 'listening' : 'idle');
     return;
   }
@@ -417,7 +514,7 @@ async function answerNow() {
   // similar-sounding question must still go through.
   if (shouldSkipAnswer({ engineBusy: engine.busy, lastAnswered, picked })) {
     overlaySend('tanay:status', 'answering');
-    overlaySend('tanay:error', 'Already answering this question.\nPress ⌘⇧↵ to force a new answer.');
+    overlaySend('tanay:error', `Already answering this question.\nPress ${hotkeyLabel('answerLastUtterance')} to force a new answer.`);
     return;
   }
 
@@ -430,7 +527,29 @@ function registerIpcHandlers() {
   ipcMain.on('tanay:audio', (event, buffer) => {
     if (event.sender !== windows.getCapture()?.webContents) return; // only the capture window
     if (!listening) return;
-    voice.push(new Int16Array(buffer));
+    meVoice?.push(new Int16Array(buffer));
+  });
+
+  // Windows system audio: the hidden loopback window feeds the "them" recogniser.
+  ipcMain.on('tanay:system-audio', (event, buffer) => {
+    if (event.sender !== windows.getSystemCapture()?.webContents) return;
+    if (!listening) return;
+    themVoice?.push(new Int16Array(buffer));
+  });
+
+  ipcMain.on('tanay:system-ready', (event) => {
+    if (event.sender !== windows.getSystemCapture()?.webContents) return;
+    windows.markSystemReady();
+  });
+
+  ipcMain.on('tanay:system-error', (event, message) => {
+    if (event.sender !== windows.getSystemCapture()?.webContents) return;
+    // Loopback failed, but the microphone leg is independent and keeps running.
+    themVoice?.stop();
+    themVoice = null;
+    overlaySend('tanay:error', `System audio unavailable: ${message}\nYour microphone is still being transcribed.`);
+    overlaySend('tanay:status', listening ? 'listening' : 'error');
+    windows.refreshTray(trayState());
   });
 
   // The renderer is where getUserMedia actually fails (denied permission,
@@ -442,15 +561,19 @@ function registerIpcHandlers() {
 
   ipcMain.on('tanay:capture-error', (event, message) => {
     if (event.sender !== windows.getCapture()?.webContents) return;
-    listening = false;
-    voice?.stop();
+    // Only the microphone leg failed. System audio may still be running, so the
+    // session keeps going and the other participant is still transcribed.
+    meVoice?.stop();
+    meVoice = null;
     // Not every capture failure is a permission problem; do not claim it is.
     const permissionProblem = /notallowed|permission|denied/i.test(message);
     overlaySend(
       'tanay:error',
-      permissionProblem ? `Microphone unavailable: ${message}` : `Audio capture failed: ${message}`
+      permissionProblem
+        ? `Microphone unavailable: ${message}\nYour voice will not be transcribed; the other side still is.`
+        : `Microphone capture failed: ${message}`
     );
-    overlaySend('tanay:status', 'error');
+    overlaySend('tanay:status', listening ? 'listening' : 'error');
     windows.refreshTray(trayState());
     // If it was a permission problem, wait for the switch to flip and resume.
     if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('microphone') !== 'granted') {
@@ -459,11 +582,17 @@ function registerIpcHandlers() {
   });
 
   ipcMain.on('tanay:open-mic-settings', () => {
-    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+    shell.openExternal(
+      IS_MAC ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone' : 'ms-settings:privacy-microphone'
+    );
   });
 
   ipcMain.on('tanay:open-screen-settings', () => {
-    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    shell.openExternal(
+      IS_MAC
+        ? 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+        : 'ms-settings:privacy-screenshots'
+    );
   });
 
   ipcMain.on('tanay:listen-toggle', () => {
@@ -530,6 +659,8 @@ function registerIpcHandlers() {
       transcription: {
         engine: cfg.cloudyvoice.engine,
         source: cfg.cloudyvoice.source,
+        captureSystem: cfg.cloudyvoice.captureSystem !== false,
+        captureMic: cfg.cloudyvoice.captureMic !== false,
         parakeetAvailable: Boolean(resolveEarBin()),
         audioAvailable: Boolean(resolveAudioBin()),
         modelPath: config.resolveModelPath(),
@@ -619,9 +750,15 @@ function registerIpcHandlers() {
       if (payload.transcription.engine === 'whisper' || payload.transcription.engine === 'parakeet') {
         patch.cloudyvoice.engine = payload.transcription.engine;
       }
-      if (payload.transcription.source === 'system' || payload.transcription.source === 'mic') {
-        patch.cloudyvoice.source = payload.transcription.source;
+      if (typeof payload.transcription.captureSystem === 'boolean') {
+        patch.cloudyvoice.captureSystem = payload.transcription.captureSystem;
       }
+      if (typeof payload.transcription.captureMic === 'boolean') {
+        patch.cloudyvoice.captureMic = payload.transcription.captureMic;
+      }
+      // A source change (old single-source control) maps onto the two flags.
+      if (payload.transcription.source === 'system') patch.cloudyvoice.captureSystem = true;
+      if (payload.transcription.source === 'mic') patch.cloudyvoice.captureMic = true;
     }
 
     config.save(patch);
@@ -629,24 +766,15 @@ function registerIpcHandlers() {
     // Keep the in-memory CV / job description in step with the saved file.
     await loadContextDocs({ quiet: true });
 
-    // A model or engine change has to reach the running recogniser, not just the file.
-    if (voice) {
-      const engineChanged = patch.cloudyvoice?.engine && patch.cloudyvoice.engine !== voice.cfg.engine;
-      if (engineChanged) {
-        const wasListening = listening;
-        if (wasListening) stopListening();
-        voice.shutdown();
-        voice = null;
-        if (wasListening) startListening();
-      } else {
-        voice.cfg.modelPath = config.resolveModelPath();
-        voice.cfg.partialModelPath = config.resolvePartialModelPath();
-        voice.cfg.source = config.load().cloudyvoice.source;
-        if (listening) {
-          stopListening();
-          startListening();
-        }
-      }
+    // Any recogniser change has to reach the running pipeline, not just the file.
+    if (themVoice || meVoice) {
+      const wasListening = listening;
+      const engineChanged =
+        patch.cloudyvoice?.engine &&
+        patch.cloudyvoice.engine !== (themVoice || meVoice)?.cfg.engine;
+      if (wasListening) stopListening();
+      if (engineChanged) shutdownVoices();
+      if (wasListening) startListening();
     }
 
     windows.refreshTray(trayState());
@@ -680,52 +808,52 @@ async function startListening() {
 
   try {
     const cfg = config.load();
-    const source = cfg.cloudyvoice.source || 'system';
-    let audioBin = '';
+    const captureSystem = cfg.cloudyvoice.captureSystem !== false;
+    const captureMic = cfg.cloudyvoice.captureMic !== false;
 
-    if (source === 'system') {
-      // The helper owns the Screen & System Audio Recording preflight and the
-      // OS prompt. Checking getMediaAccessStatus('screen') here was wrong: after
-      // a reset it reports "denied" and the helper never got to ask, so the
-      // permission dialog never appeared.
-      audioBin = resolveAudioBin();
-      if (!audioBin) {
-        overlaySend(
-          'tanay:error',
-          'System audio helper is not built.\nRun: npm run build:audio, then restart CloudyAI.'
-        );
-        overlaySend('tanay:status', 'error');
-        return;
-      }
-      cfg.cloudyvoice.audioBin = audioBin;
-    } else if (process.platform === 'darwin') {
-      // Check the OS grant first. Asking here (rather than letting getUserMedia
-      // surprise us) means a denied prompt produces a real instruction instead
-      // of a bare "Microphone unavailable".
-      const status = systemPreferences.getMediaAccessStatus('microphone');
-      if (status !== 'granted') {
-        const granted = await systemPreferences.askForMediaAccess('microphone');
-        if (!granted) {
-          overlaySend(
-            'tanay:error',
-            'Microphone is off for CloudyAI.\nSystem Settings → Privacy & Security → Microphone → enable CloudyAI, then press ⌘⇧L.'
-          );
-          overlaySend('tanay:status', 'error');
-          listening = false;
-          watchMicrophonePermission();
-          return;
-        }
-      }
+    if (!captureSystem && !captureMic) {
+      overlaySend(
+        'tanay:error',
+        'Both audio sources are off.\nOpen Settings (⚙) and enable system audio, the microphone, or both.'
+      );
+      overlaySend('tanay:status', 'error');
+      return;
     }
 
+    // A source that was turned off in Settings must not linger from the
+    // previous session.
+    if (!captureSystem) {
+      themVoice?.stop();
+      themVoice = null;
+      systemAudio?.stop();
+      systemAudio = null;
+    }
+    if (!captureMic && meVoice) {
+      meVoice.stop();
+      meVoice = null;
+    }
+
+    // Shared recogniser configuration for both sources.
     cfg.cloudyvoice.modelPath = config.resolveModelPath();
     cfg.cloudyvoice.partialModelPath = config.resolvePartialModelPath();
     cfg.cloudyvoice.bin = resolveBin(cfg.cloudyvoice.bin);
 
+    // One Parakeet model, kept in memory, shared by both sources. Loading it
+    // twice would double memory for no gain.
     if (cfg.cloudyvoice.engine === 'parakeet') {
       const earBin = resolveEarBin();
-      if (earBin) cfg.cloudyvoice.parakeetBin = earBin;
-      else {
+      if (earBin) {
+        cfg.cloudyvoice.parakeetBin = earBin;
+        if (!sharedEar) {
+          sharedEar = new CloudyEar({ bin: earBin, modelsDir: cfg.cloudyvoice.parakeetModelsDir });
+          sharedEar.on('loading', () => overlaySend('tanay:status', 'loading'));
+          sharedEar.on('progress', (percent) =>
+            overlaySend('tanay:status', `loading speech model… ${percent}%`)
+          );
+          sharedEar.on('ready', () => overlaySend('tanay:status', listening ? 'listening' : 'idle'));
+          sharedEar.on('error', (message) => overlaySend('tanay:error', `Parakeet: ${message}`));
+        }
+      } else {
         cfg.cloudyvoice.engine = 'whisper';
         overlaySend(
           'tanay:error',
@@ -734,64 +862,162 @@ async function startListening() {
       }
     }
 
-    if (!voice) {
-      voice = new CloudyVoice(cfg.cloudyvoice);
-      voice.on('partial', (t) => {
-        overlaySend('tanay:caption', t);
-      });
-      voice.on('final', onFinalTranscript);
-      voice.on('error', (msg) => {
-        overlaySend('tanay:error', msg);
-        overlaySend('tanay:status', 'error');
-      });
-      // The Parakeet model is loaded once at startup; the panel says so instead
-      // of looking frozen during the first-run download.
-      voice.on('loading', () => overlaySend('tanay:status', 'loading'));
-      voice.on('ready', () => overlaySend('tanay:status', listening ? 'listening' : 'idle'));
-    } else {
-      voice.cfg = cfg.cloudyvoice;
+    let systemReady = false;
+    let micReady = false;
+
+    // ---------------------------------------------------- the other side (them)
+    if (captureSystem) {
+      if (LOOPBACK_IN_RENDERER) {
+        // Windows: Chromium's own WASAPI loopback, no helper binary involved.
+        themVoice = ensureVoice('them', cfg.cloudyvoice);
+        if (themVoice.start()) {
+          systemReady = windows.sendToSystem('start') !== false;
+        }
+      } else if (!IS_MAC) {
+        cfg.cloudyvoice.captureSystem = false;
+        overlaySend(
+          'tanay:error',
+          'System audio capture is not supported on this platform.\nOnly your microphone will be transcribed.'
+        );
+      } else {
+        const audioBin = resolveAudioBin();
+        if (!audioBin) {
+          overlaySend(
+            'tanay:error',
+            'System audio helper is not built.\nRun: npm run build:audio, then restart CloudyAI.'
+          );
+        } else {
+          cfg.cloudyvoice.audioBin = audioBin;
+          themVoice = ensureVoice('them', cfg.cloudyvoice);
+          if (themVoice.start()) {
+            if (!systemAudio) {
+              systemAudio = new CloudyAudio({ bin: audioBin });
+              systemAudio.on('audio', (pcm) => {
+                if (listening) themVoice?.push(pcm);
+              });
+              systemAudio.on('error', (message, info = {}) => {
+                overlaySend(
+                  'tanay:error',
+                  info.fatal
+                    ? `Screen & System Audio Recording is off for CloudyAI.\nSystem Settings → Privacy & Security → Screen & System Audio Recording → enable CloudyAI, then press ${hotkeyLabel('toggleListening')} (or relaunch).`
+                    : message
+                );
+                if (info.fatal) {
+                  themVoice?.stop();
+                  themVoice = null;
+                  // The microphone leg can keep running; only the system side died.
+                  if (!meVoice) listening = false;
+                  overlaySend('tanay:status', listening ? 'listening' : 'error');
+                  watchScreenPermission();
+                  windows.refreshTray(trayState());
+                }
+              });
+            }
+            systemReady = systemAudio.start();
+          }
+        }
+      }
     }
 
-    if (!voice.start()) {
-      listening = false;
+    // ---------------------------------------------------------- my voice (me)
+    if (captureMic) {
+      let allowed = true;
+      if (process.platform === 'darwin') {
+        // Check the OS grant first. Asking here (rather than letting
+        // getUserMedia surprise us) means a denied prompt produces a real
+        // instruction instead of a bare "Microphone unavailable".
+        const status = systemPreferences.getMediaAccessStatus('microphone');
+        if (status !== 'granted') {
+          allowed = await systemPreferences.askForMediaAccess('microphone');
+        }
+      }
+      if (!allowed) {
+        overlaySend(
+          'tanay:error',
+          IS_MAC
+            ? 'Microphone is off for CloudyAI, so your own voice will not be transcribed.\n' +
+                `System Settings → Privacy & Security → Microphone → enable CloudyAI, then press ${hotkeyLabel('toggleListening')}.\n` +
+                'The other participant is still being recorded.'
+            : 'Microphone access was refused, so your own voice will not be transcribed.\n' +
+                'Settings → Privacy → Microphone → let desktop apps use the microphone, then restart CloudyAI.\n' +
+                'The other participant is still being recorded.'
+        );
+        watchMicrophonePermission();
+      } else {
+        meVoice = ensureVoice('me', cfg.cloudyvoice);
+        if (meVoice.start()) {
+          windows.sendToCapture('start');
+          micReady = true;
+        }
+      }
+    }
+
+    listening = systemReady || micReady;
+    overlaySend('tanay:status', listening ? 'listening' : 'error');
+
+    if (!listening) {
+      overlaySend(
+        'tanay:error',
+        IS_MAC
+          ? 'No audio source started.\nEnable System & Screen Audio Recording and the Microphone for CloudyAI in System Settings → Privacy & Security.'
+          : 'No audio source started.\nCheck that the microphone is plugged in and allowed, and that the speech model is installed (Settings → Transcription).'
+      );
       return;
     }
 
-    if (source === 'system') {
-      if (!systemAudio) {
-        systemAudio = new CloudyAudio({ bin: audioBin });
-        systemAudio.on('audio', (pcm) => {
-          if (listening) voice.push(pcm);
-        });
-        systemAudio.on('error', (message, info = {}) => {
-          overlaySend(
-            'tanay:error',
-            info.fatal
-              ? 'Screen & System Audio Recording is off for CloudyAI.\nSystem Settings → Privacy & Security → Screen & System Audio Recording → enable CloudyAI, then press ⌘⇧L (or relaunch).'
-              : message
-          );
-          overlaySend('tanay:status', 'error');
-          if (info.fatal) {
-            listening = false;
-            voice?.stop();
-            watchScreenPermission();
-            windows.refreshTray(trayState());
-          }
-        });
-      }
-      if (!systemAudio.start()) {
-        listening = false;
-        return;
-      }
-    } else {
-      windows.sendToCapture('start');
+    if (systemReady && micReady) {
+      overlaySend('tanay:status', 'listening');
     }
-
-    listening = true;
-    overlaySend('tanay:status', 'listening');
   } finally {
     starting = false;
   }
+}
+
+/**
+ * Build or re-configure one recogniser. Both sources share the Parakeet model;
+ * each keeps its own VAD, speech buffer and utterance counter.
+ */
+function ensureVoice(speaker, baseCfg) {
+  const existing = speaker === 'them' ? themVoice : meVoice;
+  const cfg = {
+    ...baseCfg,
+    speaker,
+    utteranceBase: speaker === 'me' ? 1000000 : 0,
+    ear: baseCfg.engine === 'parakeet' ? sharedEar : null,
+  };
+
+  if (existing) {
+    existing.cfg = cfg;
+    existing.speaker = speaker;
+    return existing;
+  }
+
+  const v = new CloudyVoice(cfg);
+  v.on('partial', (text) => {
+    lastActiveVoice = v;
+    overlaySend('tanay:caption', { text, speaker });
+  });
+  v.on('final', (text, meta = {}) => {
+    lastActiveVoice = v;
+    onFinalTranscript(text, { ...meta, speaker });
+  });
+  v.on('error', (message) => {
+    overlaySend('tanay:error', `${speaker === 'me' ? 'Microphone' : 'System audio'}: ${message}`);
+    overlaySend('tanay:status', 'error');
+  });
+  if (speaker === 'them') themVoice = v;
+  else meVoice = v;
+  return v;
+}
+
+/** Tear down both recognisers (engine change, or app quit). */
+function shutdownVoices() {
+  for (const v of allVoices()) v.shutdown();
+  themVoice = null;
+  meVoice = null;
+  lastActiveVoice = null;
+  sharedEar?.shutdown();
+  sharedEar = null;
 }
 
 // After a denial, keep watching: the user usually flips the switch in System
@@ -833,8 +1059,9 @@ function watchScreenPermission() {
 function stopListening() {
   systemAudio?.stop();
   systemAudio = null;
+  if (LOOPBACK_IN_RENDERER) windows.sendToSystem('stop');
   if (!listening) return;
-  voice?.stop();
+  for (const v of allVoices()) v.stop();
   windows.sendToCapture('stop');
   listening = false;
   overlaySend('tanay:status', 'idle');
@@ -850,7 +1077,7 @@ function trayState() {
   return {
     isListening: listening,
     provider: cfg.provider,
-    hotkeyAnswer: windows.toSymbols ? windows.toSymbols(cfg.hotkeys?.answer) : '⌘J',
+    hotkeyAnswer: windows.toSymbols(cfg.hotkeys?.answer) || (IS_MAC ? '⌘J' : 'Ctrl+J'),
     onToggle: () => windows.toggleOverlay(),
     onListen: toggleListening,
     onAnswer: answerNow,
@@ -897,8 +1124,26 @@ if (!gotLock) {
 
     app.dock?.hide();
 
+    if (LOOPBACK_IN_RENDERER) {
+      // getDisplayMedia is called by a hidden window, so there is nobody to show
+      // a picker to. Grant the primary screen plus its own audio (loopback):
+      // Chromium supplies the WASAPI loopback internally on Windows.
+      session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+        try {
+          const sources = await desktopCapturer.getSources({ types: ['screen'] });
+          const primary = sources[0];
+          if (!primary) return callback({});
+          callback({ video: primary, audio: 'loopback' });
+        } catch (err) {
+          console.log('[system-audio] loopback source failed:', err.message);
+          callback({});
+        }
+      });
+    }
+
     windows.createOverlay();
     windows.createCapture();
+    if (LOOPBACK_IN_RENDERER) windows.createSystemCapture();
     windows.buildTray(trayState());
     registerIpcHandlers();
     engine.warm();
@@ -1033,16 +1278,17 @@ if (!gotLock) {
     // system output. No microphone involved.
     if (process.argv.includes('--listen-test')) {
       (async () => {
-        config.load().cloudyvoice.source = 'system';
+        config.load().cloudyvoice.captureSystem = true;
+        config.load().cloudyvoice.captureMic = false;
         await startListening();
-        if (!voice) {
+        if (!themVoice) {
           console.log('[listen-test] no recogniser');
           app.quit();
           return;
         }
 
         const clip = path.join(app.getPath('temp'), 'cloudy-listen-test.aiff');
-        voice.on('final', (text, meta = {}) => {
+        themVoice.on('final', (text, meta = {}) => {
           console.log(
             '[listen-test] final',
             JSON.stringify({
@@ -1130,7 +1376,8 @@ if (!gotLock) {
     // capture.js -> worklet) and reports where it fails. Unlike --mic-test this
     // does not bypass our own code. It is the microphone path, so force it.
     if (process.argv.includes('--capture-test')) {
-      config.load().cloudyvoice.source = 'mic';
+      config.load().cloudyvoice.captureSystem = false;
+      config.load().cloudyvoice.captureMic = true;
       const cap = windows.getCapture();
       if (cap.webContents.isLoading()) {
         await new Promise((resolve) => cap.webContents.once('did-finish-load', resolve));
@@ -1147,7 +1394,7 @@ if (!gotLock) {
       ipcMain.on('tanay:audio', (event, buffer) => {
         chunks += 1;
         if (event.sender !== cap.webContents) return;
-        if (listening && voice) voice.push(new Int16Array(buffer));
+        if (listening && meVoice) meVoice.push(new Int16Array(buffer));
       });
 
       await startListening();
@@ -1536,8 +1783,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   stopListening();
-  voice?.shutdown();
-  voice = null;
+  shutdownVoices();
 });
 
 app.on('before-quit', () => stopListening());

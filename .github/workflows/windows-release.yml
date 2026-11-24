@@ -1,0 +1,78 @@
+name: Windows release
+
+# Builds the Windows installer on a real Windows machine and attaches it to a
+# GitHub Release. Triggered by pushing a v* tag, or run manually to get the
+# installers as workflow artifacts without publishing anything.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Bundled speech recognition: one static whisper-cli.exe, no DLLs and no
+      # VC++ redistributable, so the installer runs on a plain Windows 10/11 box.
+      - name: Build whisper.cpp
+        shell: pwsh
+        run: ./scripts/build-whisper-win.ps1
+
+      - name: Fetch the speech model
+        run: node scripts/get-model.js base --out vendor/models
+
+      - name: Smoke-test the bundled recogniser
+        shell: pwsh
+        run: |
+          $out = & .\vendor\whisper\whisper-cli.exe --help 2>&1 | Out-String
+          if ($out -notmatch 'whisper') { throw "whisper-cli.exe did not start: $out" }
+          if (-not (Test-Path '.\vendor\models\ggml-base.en.bin')) { throw "speech model missing" }
+          Write-Host "whisper-cli.exe starts and the model is staged"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package (NSIS installer + portable exe)
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          # No certificate is configured, so make electron-builder skip the
+          # signing step instead of failing on a missing identity.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: List artifacts
+        run: dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloudyai-windows-x64
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+
+      - name: Publish to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          generate_release_notes: true
+          fail_on_unmatched_files: false

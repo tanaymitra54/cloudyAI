@@ -1,5 +1,9 @@
 'use strict';
 
+const IS_MAC = window.tanay.platform === 'darwin';
+const MOD = IS_MAC ? '⌘' : 'Ctrl+';
+const MOD_SHIFT = IS_MAC ? '⌘⇧' : 'Ctrl+Shift+';
+
 const statusEl = document.getElementById('status');
 const dot = document.getElementById('dot');
 const captionEl = document.getElementById('caption');
@@ -149,6 +153,24 @@ promptEl.addEventListener('keydown', (event) => {
 sendBtn.addEventListener('click', sendPrompt);
 
 let capturing = false;
+
+/** Queue one captured image as a preview. Nothing is sent until Send. */
+function queueShot(dataUrl) {
+  if (!dataUrl) return false;
+  if (shots.length >= MAX_SHOTS) {
+    setStatus(`only ${MAX_SHOTS} screenshots per question`, 'error');
+    return false;
+  }
+  shots.push({
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    dataUrl,
+  });
+  renderShots();
+  // Take the status line back from "capturing screen…".
+  setStatus(listening ? 'listening' : 'idle', listening ? 'live' : '');
+  return true;
+}
+
 shotBtn.addEventListener('click', async () => {
   if (capturing) return;
   if (shots.length >= MAX_SHOTS) {
@@ -160,13 +182,7 @@ shotBtn.addEventListener('click', async () => {
   try {
     const result = await window.tanay.capture();
     if (result && result.ok) {
-      shots.push({
-        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-        dataUrl: result.dataUrl,
-      });
-      renderShots();
-      // Take the status line back from "capturing screen…".
-      setStatus(listening ? 'listening' : 'idle', listening ? 'live' : '');
+      queueShot(result.dataUrl);
     } else {
       setStatus('error', 'error'); // onError already spelled out the fix
     }
@@ -176,16 +192,25 @@ shotBtn.addEventListener('click', async () => {
   }
 });
 
-window.tanay.onCaption((text) => {
-  captionEl.textContent = text;
+// Global shortcut (⌘⇧S): main captured the screen and handed the image back.
+window.tanay.onShot((payload) => {
+  if (payload && payload.dataUrl) queueShot(payload.dataUrl);
 });
 
-// The full transcript: every finished utterance, appended and never truncated.
-// This is what you read to confirm exactly what the interviewer asked.
+// Global shortcut (⌘↵): send the composer exactly as the ↵ button would.
+window.tanay.onSendRequest(() => sendPrompt());
+
+// The full transcript is a chat: every finished utterance becomes a bubble on
+// the side of the person who said it. "them" = system audio (left),
+// "me" = microphone (right).
 let transcriptParts = [];
 function renderTranscript() {
   transcriptEl.innerHTML = transcriptParts
-    .map((part) => `<p>${escapeHtml(part)}</p>`)
+    .map(
+      (part) =>
+        `<div class="msg ${part.speaker === 'me' ? 'me' : 'them'}">` +
+        `<p class="bubble">${escapeHtml(part.text)}</p></div>`
+    )
     .join('');
   // Scroll after layout, otherwise scrollHeight is still the pre-render value
   // and the newest line stays just below the fold.
@@ -194,20 +219,50 @@ function renderTranscript() {
   });
 }
 
-window.tanay.onTranscript((text) => {
-  if (!text) return;
-  transcriptParts.push(text);
+function normaliseTurn(payload) {
+  if (typeof payload === 'string') return { text: payload, speaker: 'them' };
+  if (!payload || !payload.text) return null;
+  return { text: String(payload.text), speaker: payload.speaker === 'me' ? 'me' : 'them' };
+}
+
+// Live caption: the provisional bubble for whoever is talking right now.
+function showCaption(payload) {
+  const turn = normaliseTurn(payload);
+  if (!turn) {
+    captionEl.hidden = true;
+    captionEl.textContent = '';
+    captionEl.className = 'live';
+    return;
+  }
+  captionEl.hidden = false;
+  captionEl.textContent = turn.text;
+  captionEl.className = `live ${turn.speaker}`;
+}
+
+window.tanay.onCaption(showCaption);
+
+window.tanay.onTranscript((payload) => {
+  const turn = normaliseTurn(payload);
+  if (!turn) return;
+  transcriptParts.push(turn);
   renderTranscript();
 });
 
 window.tanay.onTranscriptReset(() => {
   transcriptParts = [];
   renderTranscript();
+  showCaption(null);
 });
 
 window.tanay.onAnswerStart(() => {
   document.getElementById('actions').hidden = true;
   shotBtn.disabled = false;
+  const lastTurn = transcriptParts[transcriptParts.length - 1];
+  document.getElementById('answerFor').textContent = lastTurn
+    ? lastTurn.speaker === 'me'
+      ? 'answering you'
+      : 'answering them'
+    : '';
   // A new question was asked while the previous answer is still on screen.
   // Keep the existing text visible, dimmed, and swap it only when new tokens
   // actually exist — otherwise the panel blanks mid-read.
@@ -257,6 +312,8 @@ window.tanay.onStatus((s) => {
     setStatus('capturing screen…', 'busy');
   } else if (s === 'loading') {
     setStatus('loading speech model…', 'busy');
+  } else if (s.startsWith && s.startsWith('loading speech model')) {
+    setStatus(s, 'busy');
   } else if (s === 'thinking') {
     setStatus('thinking…', 'busy');
   } else if (s === 'error') {
@@ -283,16 +340,31 @@ window.tanay.onError((message) => {
 window.tanay.onMeta((meta) => {
   metaEl.textContent = meta;
   // Manual mode advertises the hotkey in the footer; mirror it in the placeholder.
-  placeholder = meta.includes('⌘J') ? 'Listening — press ⌘J to answer' : 'Waiting for a question…';
+  const keyMatch = /·\s*([^·]{1,24}?)\s+to answer/.exec(meta);
+  const answerKey = keyMatch ? keyMatch[1] : `${MOD}J`;
+  placeholder = `Listening — press ${answerKey} to answer`;
   if (!raw) paint();
 });
+
+// The header buttons and the composer carry macOS symbols in index.html. On
+// Windows and Linux, spell the same shortcuts out instead.
+if (!IS_MAC) {
+  const swap = (s) =>
+    String(s)
+      .replace(/⌘⇧/g, 'Ctrl+Shift+')
+      .replace(/⌘↵/g, 'Ctrl+Enter')
+      .replace(/⏎/g, 'Enter')
+      .replace(/⌘/g, 'Ctrl+');
+  for (const el of document.querySelectorAll('[title]')) el.title = swap(el.title);
+  promptEl.placeholder = swap(promptEl.placeholder);
+}
 
 document.getElementById('listen').addEventListener('click', () => window.tanay.listen());
 document.getElementById('clear').addEventListener('click', () => {
   raw = '';
   thinking = false;
   pendingSwap = false;
-  captionEl.textContent = '';
+  showCaption(null);
   transcriptParts = [];
   promptEl.value = '';
   growPrompt();

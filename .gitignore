@@ -8,3 +8,6 @@ native/CloudyEar/.build/
 native/CloudyEar/.swiftpm/
 native/CloudyAudio/.build/
 native/CloudyAudio/.swiftpm/
+# Windows build inputs: the whisper.cpp binaries and the GGML model are built
+# or downloaded per machine (scripts/build-whisper-win.ps1, scripts/get-model.js).
+vendor/

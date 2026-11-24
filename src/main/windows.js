@@ -1,12 +1,17 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
 const { BrowserWindow, screen, nativeImage, Tray, Menu, app } = require('electron');
 const config = require('./config');
 const { trayTigerBitmap } = require('./tray-icon');
 
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
+
 let overlay = null;
 let capture = null;
+let systemCapture = null;
 let tray = null;
 let settingsWin = null;
 
@@ -14,9 +19,11 @@ let settingsWin = null;
 // and mark the window visible on every Space, including full-screen apps.
 function pinOnTop(win) {
   win.setAlwaysOnTop(true, 'screen-saver', 1);
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Windows has no Spaces, and setVisibleOnAllWorkspaces is a no-op there.
+  if (!IS_WIN) win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   // Content protection is what keeps the overlay out of Zoom/Meet/Teams shares
-  // and screen recordings (NSWindowSharingNone on macOS).
+  // and screen recordings (NSWindowSharingNone on macOS, WDA_EXCLUDEFROMCAPTURE
+  // on Windows).
   win.setContentProtection(true);
 }
 
@@ -81,6 +88,63 @@ function createCapture() {
     captureReady = false;
   });
   return capture;
+}
+
+// A second hidden window that owns the desktop loopback stream on Windows.
+// Chromium's getDisplayMedia with audio: 'loopback' captures the computer's own
+// output (the other side of a call) without any native helper, so the macOS
+// ScreenCaptureKit binary is not needed there.
+function createSystemCapture() {
+  systemReady = false;
+  pendingSystemCommand = null;
+  systemCapture = new BrowserWindow({
+    width: 320,
+    height: 160,
+    show: false,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, '..', 'preload', 'system-audio.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+  systemCapture.loadFile(path.join(__dirname, '..', 'renderer', 'capture', 'system.html'));
+  systemCapture.webContents.once('did-finish-load', () => markSystemReady());
+  systemCapture.on('closed', () => {
+    systemCapture = null;
+    systemReady = false;
+  });
+  return systemCapture;
+}
+
+let systemReady = false;
+let pendingSystemCommand = null;
+
+function markSystemReady() {
+  systemReady = true;
+  if (pendingSystemCommand) {
+    const command = pendingSystemCommand;
+    pendingSystemCommand = null;
+    sendToSystem(command);
+  }
+}
+
+function sendToSystem(command) {
+  const win = systemCapture;
+  if (!win || win.isDestroyed()) return false;
+  if (!systemReady) {
+    pendingSystemCommand = command;
+    return true;
+  }
+  try {
+    win.webContents.send('tanay:system-command', command);
+    return true;
+  } catch {
+    systemReady = false;
+    pendingSystemCommand = command;
+    return false;
+  }
 }
 
 /** Settings window: shortcut capture, provider/model. */
@@ -168,10 +232,21 @@ function sendToCapture(command) {
 }
 
 function trayIcon() {
-  const size = 22;
-  const buf = trayTigerBitmap(size);
+  // A template image is a macOS concept: on Windows the taskbar draws the icon
+  // as-is, so the black glyph would vanish on a dark taskbar. Use the colour
+  // app icon there instead.
+  if (IS_WIN) {
+    const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+    if (fs.existsSync(iconPath)) {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) return img.resize({ width: 16, height: 16 });
+    }
+  }
+  const size = IS_WIN ? 16 : 22;
+  // White glyph when the coloured icon is missing, so it still shows on Windows.
+  const buf = IS_WIN ? trayTigerBitmap(size, [255, 255, 255]) : trayTigerBitmap(size);
   const img = nativeImage.createFromBitmap(buf, { width: size, height: size });
-  img.setTemplateImage(true);
+  if (IS_MAC) img.setTemplateImage(true);
   return img;
 }
 
@@ -183,15 +258,63 @@ function buildTray({ onToggle, onListen, onProvider, onQuit, isListening, provid
   return tray;
 }
 
-// "CommandOrControl+J" -> "⌘J" for menu labels.
+/**
+ * "CommandOrControl+J" -> "⌘J" on macOS, "Ctrl+J" on Windows/Linux, for menu
+ * labels and the overlay footer. The user can rebind anything, so this is
+ * derived from the configured accelerator rather than hard-coded.
+ */
+const MAC_MODS = {
+  commandorcontrol: '⌘',
+  command: '⌘',
+  cmd: '⌘',
+  meta: '⌘',
+  super: '⌘',
+  control: '⌃',
+  ctrl: '⌃',
+  alt: '⌥',
+  option: '⌥',
+  shift: '⇧',
+};
+const PC_MODS = {
+  commandorcontrol: 'Ctrl',
+  command: 'Ctrl',
+  cmd: 'Ctrl',
+  meta: 'Super',
+  super: 'Super',
+  control: 'Ctrl',
+  ctrl: 'Ctrl',
+  alt: 'Alt',
+  option: 'Alt',
+  shift: 'Shift',
+};
+const NAMED_LABELS = {
+  enter: '↵',
+  return: '↵',
+  escape: 'Esc',
+  space: 'Space',
+  tab: 'Tab',
+  backspace: '⌫',
+  delete: 'Del',
+  up: '↑',
+  down: '↓',
+  left: '←',
+  right: '→',
+};
+
 function toSymbols(accelerator) {
   if (!accelerator) return '';
-  return accelerator
-    .replace(/CommandOrControl|Command|Cmd/gi, '⌘')
-    .replace(/Shift/gi, '⇧')
-    .replace(/Alt|Option/gi, '⌥')
-    .replace(/Control|Ctrl/gi, '⌃')
-    .replace(/\+/g, '');
+  const mods = IS_MAC ? MAC_MODS : PC_MODS;
+  const parts = String(accelerator)
+    .split('+')
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (mods[lower]) return mods[lower];
+      if (NAMED_LABELS[lower]) return NAMED_LABELS[lower];
+      return part.length === 1 ? part.toUpperCase() : part;
+    });
+  return IS_MAC ? parts.join('') : parts.join('+');
 }
 
 function refreshTray({
@@ -250,15 +373,21 @@ function getCapture() {
 module.exports = {
   createOverlay,
   createCapture,
+  createSystemCapture,
   createSettings,
   getSettings,
   sendToCapture,
+  sendToSystem,
   markCaptureReady,
+  markSystemReady,
   buildTray,
   refreshTray,
   toggleOverlay,
   getOverlay,
   getCapture,
+  getSystemCapture,
   pinOnTop,
   toSymbols,
+  IS_MAC,
+  IS_WIN,
 };

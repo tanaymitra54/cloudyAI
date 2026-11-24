@@ -44,12 +44,22 @@ function cleanup(text) {
  * While someone is still talking, the tail of the utterance is transcribed
  * periodically so the overlay can show a live caption.
  *
- * Events: 'partial' (text, isFinal:false), 'final' (text), 'status', 'error'
+ * Events: 'partial' (text), 'final' (text, meta), 'status', 'error'
+ *
+ * One instance watches one audio source. CloudyAI runs two side by side: the
+ * system loopback ("them") and the microphone ("me"). Each instance keeps its
+ * own VAD so the two conversations never get spliced into one sentence, and
+ * every event carries `speaker` so the overlay can lay the transcript out like
+ * a chat.
  */
 class CloudyVoice extends EventEmitter {
   constructor(cfg) {
     super();
     this.cfg = cfg;
+    // 'them' (system audio) or 'me' (microphone).
+    this.speaker = cfg.speaker === 'me' ? 'me' : 'them';
+    // Generous offset so utterance ids from the two instances never collide.
+    this.idBase = Number.isFinite(cfg.utteranceBase) ? cfg.utteranceBase : 0;
     this.seg = [];
     this.segMs = 0;
     this.silenceMs = 0;
@@ -66,7 +76,9 @@ class CloudyVoice extends EventEmitter {
     // final decode runs, so ⌘J cannot fall back to an older question.
     this.pendingText = '';
     this.pendingAt = 0;
-    this.utteranceId = 0;
+    // Absolute utterance id: starts at this source's base so the two sources
+    // never collide.
+    this.utteranceId = this.idBase;
     this.segStartAt = 0;
     this.finalizing = false;
     this._seq = 0;
@@ -79,18 +91,40 @@ class CloudyVoice extends EventEmitter {
     this.preMsAdded = 0;
 
     // engine: 'parakeet' (FluidAudio, Neural Engine) or 'whisper' (whisper.cpp).
+    // A shared `ear` is injected when two sources run at once, so the ~600 MB
+    // Parakeet model is loaded and kept in memory exactly once.
     this.ear = null;
-    if (cfg.engine === 'parakeet') {
+    if (cfg.ear) {
+      this.ear = cfg.ear;
+    } else if (cfg.engine === 'parakeet') {
       this.ear = new CloudyEar({ bin: cfg.parakeetBin, modelsDir: cfg.parakeetModelsDir });
       this.ear.on('loading', () => this.emit('loading'));
       this.ear.on('ready', () => this.emit('ready'));
       this.ear.on('progress', (percent) => this.emit('progress', percent));
       this.ear.on('error', (message) => this.emit('error', `CloudyEar: ${message}`));
     }
+    // Timestamp of the newest live caption, used to decide which source is the
+    // one currently talking.
+    this.partialAt = 0;
   }
 
   get modelPath() {
     return this.cfg.modelPath;
+  }
+
+  /**
+   * When this source was last active. Used to pick the source that is actually
+   * talking right now, so ⌘J answers the newest utterance and not the other
+   * participant's older one.
+   */
+  get activityAt() {
+    const now = Date.now();
+    return Math.max(
+      this.speaking ? now : 0,
+      this.partialAt || 0,
+      this.pendingAt || 0,
+      this.lastFinal?.at || 0
+    );
   }
 
   /** Captions can run the smaller model; finals get the accurate one. */
@@ -102,10 +136,14 @@ class CloudyVoice extends EventEmitter {
   check() {
     if (this.ear) return this.ear.check();
     if (!fs.existsSync(this.cfg.bin)) {
-      return `whisper.cpp CLI not found at "${this.cfg.bin}". Run: brew install whisper-cpp`;
+      return process.platform === 'darwin'
+        ? `whisper.cpp CLI not found at "${this.cfg.bin}". Run: brew install whisper-cpp`
+        : `whisper.cpp CLI not found at "${this.cfg.bin}". Reinstall CloudyAI, or set cloudyvoice.bin in config.json to whisper-cli.exe.`;
     }
     if (!fs.existsSync(this.modelPath)) {
-      return `CloudyVoice model missing: ${this.modelPath}\nRun: npm run get-model (or download ggml-base.en.bin from huggingface.co/ggerganov/whisper.cpp)`;
+      return process.platform === 'darwin'
+        ? `CloudyVoice model missing: ${this.modelPath}\nRun: npm run get-model (or download ggml-base.en.bin from huggingface.co/ggerganov/whisper.cpp)`
+        : `CloudyVoice model missing: ${this.modelPath}\nRun: npm run get-model to download ggml-base.en.bin.`;
     }
     if (this.cfg.partialModelPath && !fs.existsSync(this.cfg.partialModelPath)) {
       return `CloudyVoice caption model missing: ${this.cfg.partialModelPath}`;
@@ -151,6 +189,7 @@ class CloudyVoice extends EventEmitter {
     this.pendingAt = 0;
     this.queuedFinal = null;
     this.lastPartialAt = 0;
+    this.partialAt = 0;
     this.segStartAt = 0;
     this.finalizing = false;
     this.pre = [];
@@ -233,7 +272,8 @@ class CloudyVoice extends EventEmitter {
       // Ignore a caption that only repeats the previous one.
       if (text === this.partialText) return;
       this.partialText = text;
-      this.emit('partial', text);
+      this.partialAt = Date.now();
+      this.emit('partial', text, { speaker: this.speaker });
     });
   }
 
@@ -276,7 +316,12 @@ class CloudyVoice extends EventEmitter {
     // A very short blip is usually a door or a chair, but do not drop a real
     // one-word question: the old 400 ms floor swallowed "Why?" completely.
     if (speechMs < 250) {
-      this.emit('dropped', { reason: 'too-short', text: this.pendingText, utteranceId });
+      this.emit('dropped', {
+        reason: 'too-short',
+        text: this.pendingText,
+        utteranceId,
+        speaker: this.speaker,
+      });
       return;
     }
 
@@ -307,7 +352,8 @@ class CloudyVoice extends EventEmitter {
       if (this.running && text && !duplicate) {
         this.lastFinal = { text, at: now };
         this.pendingText = '';
-        this.emit('final', text, { ...meta, decodeMs });
+        this.pendingAt = 0;
+        this.emit('final', text, { ...meta, speaker: this.speaker, decodeMs });
       }
       this.finalizing = false;
       this.drain();
@@ -325,7 +371,7 @@ class CloudyVoice extends EventEmitter {
 
   transcribe(int16, kind) {
     const seq = ++this._seq;
-    const id = `${kind}-${Date.now()}-${seq}`;
+    const id = `${this.speaker}-${kind}-${Date.now()}-${seq}`;
     const wav = path.join(this.tmpDir, `${id}.wav`);
     const outBase = path.join(this.tmpDir, id);
 
