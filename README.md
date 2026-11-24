@@ -205,6 +205,13 @@ kiosk window that grabs the foreground a moment later does not bury it:
 "overlay": { "keepOnTopMs": 150 }
 ```
 
+On Windows a native helper does the re-asserting too: `CloudyMouse.exe --topmost
+<hwnd>` watches for every foreground change (`SetWinEventHook`) and re-applies
+the topmost band, so a kiosk browser that grabs the front on each click is
+answered on the same frame instead of waiting for the next tick. It also detects
+when the `WS_EX_TOPMOST` flag has been cleared and sets it again, which a plain
+`setAlwaysOnTop()` call from Electron does not.
+
 The interval defaults to 150 ms because a kiosk that re-asserts itself is really
 a z-order race: the last window to claim the top wins, so the shorter timer holds
 the front. Every recognised mouse click also re-asserts immediately, since that

@@ -40,6 +40,7 @@ const { CloudyVoice } = require('./stt/CloudyVoice');
 const { CloudyEar } = require('./stt/CloudyEar');
 const { CloudyAudio } = require('./audio/CloudyAudio');
 const { MouseClicks } = require('./mouse/MouseClicks');
+const { TopmostGuard } = require('./mouse/TopmostGuard');
 const { AnswerEngine } = require('./llm');
 const { pickQuestion, shouldSkipAnswer, conversationFor } = require('./pick');
 const docs = require('./docs');
@@ -196,7 +197,7 @@ function metaLine() {
   const section = cfg[SECTIONS[cfg.provider] || cfg.provider] || {};
   const model = section.model || cfg.provider;
   const mode = `${hotkeyLabel('answer') || 'answer'} to answer`;
-  return `${cfg.provider} · ${model} · ${mode} · ${turns.length} turns`;
+  return `v${app.getVersion()} · ${cfg.provider} · ${model} · ${mode} · ${turns.length} turns`;
 }
 
 function pushMeta() {
@@ -260,6 +261,48 @@ function applyCornerTrigger() {
 }
 
 /**
+ * Keep the panel in front from a separate process. A JS timer calling
+ * setAlwaysOnTop() is not enough against a fullscreen browser in kiosk mode:
+ * the WS_EX_TOPMOST flag can be cleared by the shell and the call is skipped
+ * when Electron already believes the window is topmost. This helper watches for
+ * foreground changes and re-asserts our own window directly.
+ */
+let topmostGuard = null;
+
+function applyTopmostGuard() {
+  if (!IS_WIN) return;
+  const overlay = windows.getOverlay();
+  if (!overlay || overlay.isDestroyed()) return;
+
+  const cfg = config.load().overlay || {};
+  if (topmostGuard) {
+    topmostGuard.stop();
+    topmostGuard = null;
+  }
+  if (cfg.keepOnTopMs === 0) return; // explicitly disabled
+
+  const bin = resolveMouseBin();
+  if (!bin) return;
+
+  let handle;
+  try {
+    handle = overlay.getNativeWindowHandle();
+  } catch {
+    return;
+  }
+  if (!handle || !handle.length) return;
+  const hwnd = handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0));
+
+  topmostGuard = new TopmostGuard({
+    bin,
+    intervalMs: Math.max(20, Number(cfg.keepOnTopMs) || 50),
+  });
+  topmostGuard.on('error', (message) => console.log('[topmost]', message));
+  topmostGuard.on('ready', () => console.log('[topmost] guarding', `0x${hwnd.toString(16)}`));
+  topmostGuard.start(`0x${hwnd.toString(16)}`);
+}
+
+/**
  * Three clicks anywhere summons the panel. A mouse hook is the only way to see
  * clicks that land on another app, which is why this uses a helper process.
  * Off by default; see overlay.mouseTrigger in config.json.
@@ -320,6 +363,7 @@ function watchConfig() {
           applyCornerTrigger();
           applyMouseTrigger();
           windows.startTopWatchdog(windows.getOverlay(), config.load().overlay?.keepOnTopMs);
+          applyTopmostGuard();
           loadContextDocs({ quiet: true }).catch(() => {});
           overlaySend('tanay:meta', metaLine());
           windows.refreshTray(trayState());
@@ -1230,6 +1274,7 @@ if (!gotLock) {
     }
 
     windows.createOverlay();
+    applyTopmostGuard();
     windows.createCapture();
     if (LOOPBACK_IN_RENDERER) windows.createSystemCapture();
     windows.buildTray(trayState());
@@ -1873,6 +1918,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   mouseWatcher?.stop();
+  topmostGuard?.stop();
   windows.stopCornerTrigger();
   stopListening();
   shutdownVoices();
