@@ -370,6 +370,10 @@ function getCapture() {
   return capture;
 }
 
+function getSystemCapture() {
+  return systemCapture;
+}
+
 module.exports = {
   createOverlay,
   createCapture,
