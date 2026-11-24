@@ -194,6 +194,28 @@ not delivered to a normal-integrity process, so it cannot see them. Tune it in
 
 `windowMs` is how long the burst may take. Raise it if three clicks feel rushed.
 
+## Staying in front of a kiosk app
+
+Being "always on top" is one flag; staying there against an app that keeps
+re-asserting itself is another. On Windows the panel re-applies the topmost band
+and its z-order every 900 ms while it is visible, without activating, so a
+kiosk window that grabs the foreground a moment later does not bury it:
+
+```json
+"overlay": { "keepOnTopMs": 900 }
+```
+
+What this does and does not beat:
+
+| Situation | Result |
+|---|---|
+| Fullscreen browser / kiosk-mode app | stays in front |
+| Another always-on-top window | stays in front (z-order is re-applied) |
+| The kiosk minimises or hides other windows | the panel restores itself, still without focus |
+| Exclusive-fullscreen DirectX game/player | not guaranteed; nothing windowed can draw there |
+| Elevated kiosk app | only partly: it can still bury or kill the panel |
+| Kiosk that terminates other processes | loses; same as Task Manager |
+
 **Corner trigger** (off by default). Rest the pointer in a screen corner and the
 panel toggles. It only reads the pointer position, so no keyboard hook can stop
 it, and it needs no permission or elevation. Turn it on in

@@ -27,6 +27,49 @@ function pinOnTop(win) {
   win.setContentProtection(true);
 }
 
+// A kiosk app re-asserts its own window every time it takes the foreground,
+// which is enough to push a plain topmost window behind it. Re-applying the
+// topmost band and the z-order on a short timer puts the panel back in front
+// without ever taking focus away from the app the user is working in.
+let topWatchdog = null;
+let topWatchdogWin = null;
+
+function ensureOnTop() {
+  const win = topWatchdogWin;
+  if (!win || win.isDestroyed()) {
+    stopTopWatchdog();
+    return;
+  }
+  try {
+    // Something minimised us from outside (the overlay cannot minimise itself).
+    // Come back, but keep the panel inactive.
+    if (win.isMinimized()) {
+      win.restore();
+      win.showInactive();
+    }
+    // The user pressed ×; do not fight a deliberate hide.
+    if (!win.isVisible()) return;
+    win.setAlwaysOnTop(true, 'screen-saver', 1);
+    win.moveTop();
+  } catch {
+    stopTopWatchdog();
+  }
+}
+
+function startTopWatchdog(win, intervalMs = 900) {
+  stopTopWatchdog();
+  if (!IS_WIN || !intervalMs) return;
+  topWatchdogWin = win;
+  topWatchdog = setInterval(ensureOnTop, Math.max(250, Number(intervalMs) || 900));
+  topWatchdog.unref?.();
+}
+
+function stopTopWatchdog() {
+  if (topWatchdog) clearInterval(topWatchdog);
+  topWatchdog = null;
+  topWatchdogWin = null;
+}
+
 function createOverlay() {
   const cfg = config.load().overlay;
   const { workArea } = screen.getPrimaryDisplay();
@@ -55,10 +98,12 @@ function createOverlay() {
 
   overlay.loadFile(path.join(__dirname, '..', 'renderer', 'overlay', 'index.html'));
   pinOnTop(overlay);
+  startTopWatchdog(overlay, cfg.keepOnTopMs);
   overlay.setOpacity(cfg.opacity ?? 0.96);
 
   overlay.once('ready-to-show', () => overlay.showInactive());
   overlay.on('closed', () => {
+    stopTopWatchdog();
     overlay = null;
   });
   return overlay;
@@ -362,6 +407,7 @@ function toggleOverlay() {
   else {
     overlay.showInactive();
     pinOnTop(overlay);
+    startTopWatchdog(overlay, config.load().overlay?.keepOnTopMs);
   }
   return overlay;
 }
@@ -459,6 +505,8 @@ module.exports = {
   getCapture,
   getSystemCapture,
   pinOnTop,
+  startTopWatchdog,
+  stopTopWatchdog,
   toSymbols,
   startCornerTrigger,
   stopCornerTrigger,

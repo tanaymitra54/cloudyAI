@@ -317,6 +317,7 @@ function watchConfig() {
           applyHotkeys();
           applyCornerTrigger();
           applyMouseTrigger();
+          windows.startTopWatchdog(windows.getOverlay(), config.load().overlay?.keepOnTopMs);
           loadContextDocs({ quiet: true }).catch(() => {});
           overlaySend('tanay:meta', metaLine());
           windows.refreshTray(trayState());
