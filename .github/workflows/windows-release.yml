@@ -54,6 +54,19 @@ jobs:
           # signing step instead of failing on a missing identity.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      - name: Verify the packaged app carries the recogniser
+        shell: pwsh
+        run: |
+          $res = 'dist\win-unpacked\resources'
+          $exe = Join-Path $res 'whisper\whisper-cli.exe'
+          $model = Join-Path $res 'models\ggml-base.en.bin'
+          if (-not (Test-Path $exe)) { throw "whisper-cli.exe missing from the package" }
+          if (-not (Test-Path $model)) { throw "speech model missing from the package" }
+          $dlls = Get-ChildItem (Join-Path $res 'whisper') -Filter *.dll -ErrorAction SilentlyContinue
+          Write-Host ("packaged recogniser: {0:N0} MB exe, {1:N0} MB model, {2} runtime DLLs" -f `
+            ((Get-Item $exe).Length/1MB), ((Get-Item $model).Length/1MB), $dlls.Count)
+          if ($dlls.Count -eq 0) { Write-Warning 'no MSVC runtime DLLs next to whisper-cli.exe' }
+
       - name: List artifacts
         run: dir dist
 
