@@ -33,9 +33,12 @@ function pinOnTop(win) {
 // without ever taking focus away from the app the user is working in.
 let topWatchdog = null;
 let topWatchdogWin = null;
+// Whether the user wants the panel on screen. Lets the watchdog tell "the user
+// pressed x" apart from "something outside hid the window".
+let overlayWanted = false;
 
 function ensureOnTop() {
-  const win = topWatchdogWin;
+  const win = topWatchdogWin || overlay;
   if (!win || win.isDestroyed()) {
     stopTopWatchdog();
     return;
@@ -47,8 +50,12 @@ function ensureOnTop() {
       win.restore();
       win.showInactive();
     }
-    // The user pressed ×; do not fight a deliberate hide.
-    if (!win.isVisible()) return;
+    if (!win.isVisible()) {
+      // Deliberately hidden: leave it alone.
+      if (!overlayWanted) return;
+      // Hidden by something other than the user: bring it back, still inactive.
+      win.showInactive();
+    }
     win.setAlwaysOnTop(true, 'screen-saver', 1);
     win.moveTop();
   } catch {
@@ -56,12 +63,21 @@ function ensureOnTop() {
   }
 }
 
-function startTopWatchdog(win, intervalMs = 900) {
+function startTopWatchdog(win, intervalMs = 150) {
   stopTopWatchdog();
   if (!IS_WIN || !intervalMs) return;
   topWatchdogWin = win;
-  topWatchdog = setInterval(ensureOnTop, Math.max(250, Number(intervalMs) || 900));
+  topWatchdog = setInterval(ensureOnTop, Math.max(50, Number(intervalMs) || 150));
   topWatchdog.unref?.();
+}
+
+/**
+ * Re-assert immediately, without waiting for the next tick. Called after a
+ * mouse click, because that is exactly when a kiosk app brings itself forward.
+ */
+function nudgeOnTop() {
+  if (!IS_WIN) return;
+  ensureOnTop();
 }
 
 function stopTopWatchdog() {
@@ -101,8 +117,10 @@ function createOverlay() {
   startTopWatchdog(overlay, cfg.keepOnTopMs);
   overlay.setOpacity(cfg.opacity ?? 0.96);
 
+  overlayWanted = true;
   overlay.once('ready-to-show', () => overlay.showInactive());
   overlay.on('closed', () => {
+    overlayWanted = false;
     stopTopWatchdog();
     overlay = null;
   });
@@ -403,8 +421,11 @@ function refreshTray({
 
 function toggleOverlay() {
   if (!overlay) return createOverlay();
-  if (overlay.isVisible()) overlay.hide();
-  else {
+  if (overlay.isVisible()) {
+    overlayWanted = false;
+    overlay.hide();
+  } else {
+    overlayWanted = true;
     overlay.showInactive();
     pinOnTop(overlay);
     startTopWatchdog(overlay, config.load().overlay?.keepOnTopMs);
@@ -414,6 +435,12 @@ function toggleOverlay() {
 
 function getOverlay() {
   return overlay;
+}
+
+/** The panel's own × button: hidden on purpose, so the watchdog leaves it be. */
+function hideOverlay() {
+  overlayWanted = false;
+  overlay?.hide();
 }
 
 function getCapture() {
@@ -501,12 +528,14 @@ module.exports = {
   buildTray,
   refreshTray,
   toggleOverlay,
+  hideOverlay,
   getOverlay,
   getCapture,
   getSystemCapture,
   pinOnTop,
   startTopWatchdog,
   stopTopWatchdog,
+  nudgeOnTop,
   toSymbols,
   startCornerTrigger,
   stopCornerTrigger,

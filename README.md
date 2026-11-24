@@ -202,8 +202,17 @@ and its z-order every 900 ms while it is visible, without activating, so a
 kiosk window that grabs the foreground a moment later does not bury it:
 
 ```json
-"overlay": { "keepOnTopMs": 900 }
+"overlay": { "keepOnTopMs": 150 }
 ```
+
+The interval defaults to 150 ms because a kiosk that re-asserts itself is really
+a z-order race: the last window to claim the top wins, so the shorter timer holds
+the front. Every recognised mouse click also re-asserts immediately, since that
+is the exact moment the kiosk app takes the foreground. Lower it to 50 if the
+kiosk still wins; it costs one cheap `SetWindowPos` per tick.
+
+If something hides the panel from outside, it is brought back without focus. A
+hide you asked for (the × button) is left alone.
 
 What this does and does not beat:
 

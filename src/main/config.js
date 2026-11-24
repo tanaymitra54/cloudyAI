@@ -90,9 +90,10 @@ const DEFAULTS = {
     height: 680,
     opacity: 0.96,
     // Windows re-applies the topmost band this often while the panel is visible.
-    // A kiosk app that keeps re-asserting itself would otherwise sit in front.
-    // 0 turns the watchdog off.
-    keepOnTopMs: 900,
+    // A kiosk app that keeps re-asserting itself would otherwise sit in front,
+    // so this is deliberately short: it is a z-order race and the faster timer
+    // holds the front. 0 turns the watchdog off.
+    keepOnTopMs: 150,
     // Mouse-only way to summon the panel when global hotkeys are being swallowed
     // (kiosk apps, lockdown software). Resting the pointer in a screen corner for
     // dwellMs toggles the panel. No hook, no permission, no elevation.

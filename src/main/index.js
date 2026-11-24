@@ -292,6 +292,8 @@ function applyMouseTrigger() {
   mouseWatcher = new MouseClicks({ bin });
   mouseWatcher.on('error', (message) => console.log('[mouse]', message));
   mouseWatcher.on('click', () => {
+    // The click itself is the moment the kiosk app just took the foreground.
+    windows.nudgeOnTop();
     const now = Date.now();
     clickTimes.push(now);
     while (clickTimes.length && now - clickTimes[0] > windowMs) clickTimes.shift();
@@ -697,7 +699,7 @@ function registerIpcHandlers() {
   );
   ipcMain.handle('tanay:capture', () => captureScreenshot());
 
-  ipcMain.on('tanay:overlay-hide', () => windows.getOverlay()?.hide());
+  ipcMain.on('tanay:overlay-hide', () => windows.hideOverlay());
   ipcMain.on('tanay:settings', () => windows.createSettings());
 
   // ------------------------------------------------------------------ settings
